@@ -25,42 +25,34 @@ export interface ChatMessage {
   tool_call_id?: string;
 }
 
+type BaseMessage = { content: string; _getType(): string };
+
 export class ChatArrayMemory {
   constructor(
-    private readonly memory: {
-      loadMemoryVariables: (vars: Record<string, unknown>) => Promise<Record<string, any>>;
-      saveContext: (
-        input: Record<string, unknown>,
-        output: Record<string, unknown>,
-      ) => Promise<void>;
-    },
-    private readonly key: string = 'chat_history_oai',
-    private readonly maxContextTokens: number | null = null, // optional – no trimming when null
+    private readonly memory: any, // BufferMemory or BufferWindowMemory
+    private readonly maxContextTokens: number | null = null,
   ) {}
 
   /**
    * Load the stored chat array.  Performs legacy-format migration if needed.
    */
   async load(): Promise<ChatMessage[]> {
-    const vars = await this.memory.loadMemoryVariables({});
-    const raw = vars[this.key];
-    if (!raw || typeof raw !== 'string') return [];
-
-    try {
-      // Normal path: valid JSON array.
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed as ChatMessage[];
-      // Migration path: wrapper object from older implementation.
-      if (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        (parsed as any).format === 'openai_messages' &&
-        Array.isArray((parsed as any).messages)
-      ) {
-        return (parsed as any).messages as ChatMessage[];
+    if (!this.memory.chatHistory || !this.memory.chatHistory.getMessages) {
+      return [];
+    }
+    const msgs: BaseMessage[] = await this.memory.chatHistory.getMessages();
+    // Find last AIMessage whose content parses as array
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if ((m as any)._getType?.() === 'ai') {
+        const text = (m as any).content;
+        if (typeof text === 'string') {
+          try {
+            const parsed = JSON.parse(text);
+            if (Array.isArray(parsed)) return parsed as ChatMessage[];
+          } catch {}
+        }
       }
-    } catch {
-      // ignore parse errors – fallback to empty
     }
     return [];
   }
@@ -68,12 +60,16 @@ export class ChatArrayMemory {
   /** Save messages, performing optional trimming first */
   async save(messages: ChatMessage[]): Promise<void> {
     let finalMessages: ChatMessage[] = messages;
-
     if (this.maxContextTokens !== null) {
       finalMessages = this.trimToFit(messages, this.maxContextTokens);
     }
-
-    await this.memory.saveContext({}, { [this.key]: JSON.stringify(finalMessages) });
+    if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
+      const msg: BaseMessage = {
+        content: JSON.stringify(finalMessages),
+        _getType() { return 'ai'; }
+      } as any;
+      await this.memory.chatHistory.addMessage(msg);
+    }
   }
 
   /**

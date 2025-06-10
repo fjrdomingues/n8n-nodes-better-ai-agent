@@ -7,6 +7,7 @@ const openai_1 = require("@ai-sdk/openai");
 const anthropic_1 = require("@ai-sdk/anthropic");
 const zod_1 = require("zod");
 const utils_1 = require("./utils");
+const chatArrayMemory_1 = require("./utils/chatArrayMemory");
 // Helper function to convert n8n model to AI SDK compatible format
 function convertN8nModelToAiSdk(n8nModel) {
     if (!n8nModel) {
@@ -302,6 +303,46 @@ function getInputs() {
     ];
     return ['main', ...getInputData(specialInputs)];
 }
+/** Helper: convert ai-sdk result to OpenAI-style messages */
+function convertResultToChatMessages(result) {
+    const out = [];
+    if (result.steps && result.steps.length > 0) {
+        for (const step of result.steps) {
+            if (step.toolCalls && step.toolCalls.length > 0) {
+                const assistantMsg = {
+                    role: 'assistant',
+                    content: step.text || null,
+                    tool_calls: step.toolCalls.map((tc) => ({
+                        id: tc.toolCallId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+                        type: 'function',
+                        function: {
+                            name: tc.toolName,
+                            arguments: JSON.stringify(tc.args ?? {})
+                        }
+                    }))
+                };
+                out.push(assistantMsg);
+                if (step.toolResults && step.toolResults.length > 0) {
+                    for (const toolResult of step.toolResults) {
+                        const callId = assistantMsg.tool_calls?.find(tc => tc.function.name === toolResult.toolName)?.id || assistantMsg.tool_calls?.[0]?.id || '';
+                        out.push({
+                            role: 'tool',
+                            content: typeof toolResult.result === 'string' ? toolResult.result : JSON.stringify(toolResult.result),
+                            tool_call_id: callId
+                        });
+                    }
+                }
+            }
+            else if (step.text && step.text.trim()) {
+                out.push({ role: 'assistant', content: step.text });
+            }
+        }
+    }
+    else if (result.text) {
+        out.push({ role: 'assistant', content: result.text });
+    }
+    return out;
+}
 class BetterAiAgent {
     description = {
         displayName: 'Better AI Agent',
@@ -400,85 +441,49 @@ class BetterAiAgent {
                 }
                 // Get options
                 const options = this.getNodeParameter('options', itemIndex, {});
-                // Get conversation history from memory if available
+                // Initialize memory adapter
+                let memoryAdapter = null;
+                if (connectedMemory) {
+                    memoryAdapter = new chatArrayMemory_1.ChatArrayMemory(connectedMemory);
+                }
+                // Load previous messages (if any)
                 let messages = [];
-                if (connectedMemory && connectedMemory.chatHistory) {
-                    // Load conversation history and format it properly for AI SDK
+                if (memoryAdapter) {
                     try {
-                        const history = connectedMemory.chatHistory.messages || [];
-                        console.log(`Loading ${history.length} messages from memory...`);
-                        // Process each message from memory
-                        for (const msg of history) {
-                            if (msg._getType && msg._getType() === 'human') {
-                                // Add user message
-                                messages.push({
-                                    role: 'user',
-                                    content: msg.content
-                                });
-                            }
-                            else if (msg._getType && msg._getType() === 'ai') {
-                                // Check if this is our new OpenAI format
-                                try {
-                                    const parsedOutput = JSON.parse(msg.content);
-                                    if (parsedOutput.format === 'openai_messages' && parsedOutput.messages) {
-                                        console.log('Found OpenAI format conversation:', parsedOutput.messages.length, 'messages');
-                                        // Add all messages from the OpenAI format (skip the user message since we already added it)
-                                        for (const openaiMsg of parsedOutput.messages) {
-                                            if (openaiMsg.role !== 'user') { // Skip user messages to avoid duplication
-                                                messages.push(openaiMsg);
-                                            }
-                                        }
-                                    }
-                                    else {
-                                        // Fallback to old text format
-                                        console.log('Found old text format conversation');
-                                        messages.push({
-                                            role: 'assistant',
-                                            content: msg.content
-                                        });
-                                    }
-                                }
-                                catch (parseError) {
-                                    // If not JSON, treat as regular text
-                                    console.log('Found plain text conversation');
-                                    messages.push({
-                                        role: 'assistant',
-                                        content: msg.content
-                                    });
-                                }
-                            }
-                        }
-                        console.log(`✅ Loaded ${messages.length} messages from conversation history`);
-                        console.log('Message types:', messages.map(m => m.role).join(', '));
+                        messages = await memoryAdapter.load();
+                        console.log(`✅ Loaded ${messages.length} messages from conversation history.`);
                     }
-                    catch (error) {
-                        console.warn('❌ Failed to load conversation history from memory:', error);
-                        // Continue without history if loading fails
+                    catch (err) {
+                        console.warn('❌ Failed to load conversation history – starting fresh.', err);
                     }
                 }
-                // Add system message if provided
+                // Add system message if provided and not already present at top
                 if (options.systemMessage) {
-                    messages.unshift({
-                        role: 'system',
-                        content: options.systemMessage
-                    });
+                    if (!messages.length || messages[0].role !== 'system') {
+                        messages.unshift({ role: 'system', content: options.systemMessage });
+                    }
                 }
-                // Add the current user input
-                messages.push({
-                    role: 'user',
-                    content: input
-                });
+                // Append current user input
+                messages.push({ role: 'user', content: input });
                 // Generate response with AI SDK - using the pattern from the example
                 // Note: temperature, maxTokens, etc. come from the connected model, not node parameters
                 const result = await (0, ai_1.generateText)({
                     model: aiModel, // Model settings (temperature, maxTokens) come from the connected model
                     tools: aiTools,
                     maxSteps: options.maxSteps || 5,
-                    messages, // Use the formatted conversation history
+                    messages: messages, // cast to satisfy type compatibility
                 });
-                // Save conversation to memory after successful generation - INCLUDING TOOL CALLS
-                if (connectedMemory) {
-                    await saveToMemory(connectedMemory, input, result);
+                // Convert result steps to ChatMessage objects & persist
+                if (memoryAdapter) {
+                    try {
+                        const newMessages = convertResultToChatMessages(result);
+                        messages.push(...newMessages);
+                        await memoryAdapter.save(messages);
+                        console.log(`💾 Saved ${messages.length} messages (including new turn).`);
+                    }
+                    catch (err) {
+                        console.warn('❌ Failed to save conversation to memory:', err);
+                    }
                 }
                 // Prepare output
                 returnData.push({
