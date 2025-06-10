@@ -1,0 +1,507 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BetterAiAgent = void 0;
+const n8n_workflow_1 = require("n8n-workflow");
+const ai_1 = require("ai");
+const openai_1 = require("@ai-sdk/openai");
+const anthropic_1 = require("@ai-sdk/anthropic");
+const zod_1 = require("zod");
+const utils_1 = require("./utils");
+// Helper function to convert n8n model to AI SDK compatible format
+function convertN8nModelToAiSdk(n8nModel) {
+    if (!n8nModel) {
+        throw new Error('No language model provided');
+    }
+    // Debug: Log the model properties to understand the structure
+    console.log('n8n Model type:', n8nModel.constructor?.name);
+    console.log('n8n Model properties:', Object.keys(n8nModel));
+    // Extract model information from the LangChain model
+    const modelName = n8nModel.modelName || n8nModel.model || 'gpt-4o-mini';
+    // Check if it's an OpenAI-compatible model (OpenAI, Azure OpenAI, etc.)
+    if (n8nModel.constructor?.name?.includes('ChatOpenAI') ||
+        n8nModel.constructor?.name?.includes('OpenAI')) {
+        // Extract settings from the LangChain model
+        const settings = {};
+        if (n8nModel.temperature !== undefined)
+            settings.temperature = n8nModel.temperature;
+        if (n8nModel.maxTokens !== undefined)
+            settings.maxTokens = n8nModel.maxTokens;
+        if (n8nModel.topP !== undefined)
+            settings.topP = n8nModel.topP;
+        if (n8nModel.frequencyPenalty !== undefined)
+            settings.frequencyPenalty = n8nModel.frequencyPenalty;
+        if (n8nModel.presencePenalty !== undefined)
+            settings.presencePenalty = n8nModel.presencePenalty;
+        // Extract API key from the LangChain model
+        const apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
+        console.log('OpenAI API Key found:', apiKey ? 'YES (length: ' + apiKey.length + ')' : 'NO');
+        // Try to get API key from clientConfig if not found directly
+        let finalApiKey = apiKey;
+        if (!finalApiKey && n8nModel.clientConfig) {
+            const clientApiKey = n8nModel.clientConfig.apiKey || n8nModel.clientConfig.openAIApiKey;
+            console.log('Client config API key:', clientApiKey ? 'YES (length: ' + clientApiKey.length + ')' : 'NO');
+            if (clientApiKey) {
+                finalApiKey = clientApiKey;
+            }
+        }
+        // Extract base URL if it exists (for Azure OpenAI, etc.)
+        if (n8nModel.configuration?.baseURL) {
+            settings.baseURL = n8nModel.configuration.baseURL;
+        }
+        // Use createOpenAI with explicit API key instead of openai()
+        if (finalApiKey) {
+            console.log('Using createOpenAI with explicit API key');
+            const openaiProvider = (0, openai_1.createOpenAI)({
+                apiKey: finalApiKey,
+                ...settings
+            });
+            return openaiProvider(modelName);
+        }
+        else {
+            console.log('No API key found, using default openai provider');
+            return (0, openai_1.openai)(modelName, settings);
+        }
+    }
+    // Check if it's an Anthropic model
+    if (n8nModel.constructor?.name?.includes('ChatAnthropic') ||
+        n8nModel.constructor?.name?.includes('Anthropic')) {
+        const settings = {};
+        if (n8nModel.temperature !== undefined)
+            settings.temperature = n8nModel.temperature;
+        if (n8nModel.maxTokens !== undefined)
+            settings.maxTokens = n8nModel.maxTokens;
+        if (n8nModel.topP !== undefined)
+            settings.topP = n8nModel.topP;
+        // Extract API key for Anthropic
+        const apiKey = n8nModel.anthropicApiKey || n8nModel.apiKey;
+        // Use createAnthropic with explicit API key
+        if (apiKey) {
+            console.log('Using createAnthropic with explicit API key');
+            const anthropicProvider = (0, anthropic_1.createAnthropic)({
+                apiKey: apiKey,
+                ...settings
+            });
+            return anthropicProvider(modelName);
+        }
+        else {
+            console.log('No API key found, using default anthropic provider');
+            return (0, anthropic_1.anthropic)(modelName, settings);
+        }
+    }
+    // Default fallback to OpenAI with a sensible model
+    console.warn(`Unknown model type: ${n8nModel.constructor?.name}, defaulting to OpenAI`);
+    return (0, openai_1.openai)('gpt-4o-mini');
+}
+// Helper function to convert n8n tools to AI SDK tools
+function convertN8nToolsToAiSdk(n8nTools) {
+    const tools = {};
+    console.log('Converting n8n tools to AI SDK format:');
+    console.log('Number of tools:', n8nTools.length);
+    for (const n8nTool of n8nTools) {
+        console.log('n8n Tool:', {
+            name: n8nTool?.name,
+            description: n8nTool?.description,
+            schema: n8nTool?.schema,
+            keys: Object.keys(n8nTool || {})
+        });
+        if (n8nTool && n8nTool.name) {
+            // Create a more robust schema - handle ZodEffects
+            let toolSchema;
+            try {
+                if (n8nTool.schema) {
+                    // Check if it's a ZodEffects and extract the underlying schema
+                    if (n8nTool.schema._def && n8nTool.schema._def.schema) {
+                        console.log('Extracting schema from ZodEffects');
+                        toolSchema = n8nTool.schema._def.schema;
+                    }
+                    else {
+                        toolSchema = n8nTool.schema;
+                    }
+                }
+                else {
+                    // Default schema if none provided
+                    toolSchema = zod_1.z.object({
+                        input: zod_1.z.string().describe('Tool input'),
+                    });
+                }
+                console.log('Final tool schema:', toolSchema);
+            }
+            catch (error) {
+                console.warn(`Invalid schema for tool ${n8nTool.name}, using default:`, error);
+                toolSchema = zod_1.z.object({
+                    input: zod_1.z.string().describe('Tool input'),
+                });
+            }
+            tools[n8nTool.name] = (0, ai_1.tool)({
+                description: n8nTool.description || `Execute ${n8nTool.name}`,
+                parameters: toolSchema,
+                execute: async (parameters) => {
+                    console.log(`Executing tool ${n8nTool.name} with parameters:`, parameters);
+                    try {
+                        // Call the n8n tool
+                        const result = await n8nTool.invoke(parameters);
+                        console.log(`Tool ${n8nTool.name} result:`, result);
+                        return result;
+                    }
+                    catch (error) {
+                        console.error(`Tool ${n8nTool.name} execution failed:`, error);
+                        throw error;
+                    }
+                },
+            });
+            console.log(`Successfully converted tool: ${n8nTool.name}`);
+        }
+        else {
+            console.warn('Skipping invalid tool:', n8nTool);
+        }
+    }
+    console.log(`Total tools converted: ${Object.keys(tools).length}`);
+    return tools;
+}
+// Helper function to save conversation to memory using proper OpenAI message format
+async function saveToMemory(memory, userInput, result) {
+    if (!memory || !memory.saveContext)
+        return;
+    try {
+        console.log('=== SAVING TO MEMORY (OpenAI Format) ===');
+        console.log('User input:', userInput);
+        console.log('Result steps:', result.steps?.length || 0);
+        console.log('Result text:', result.text);
+        // Build proper OpenAI message format
+        const messages = [];
+        // Add user message
+        messages.push({
+            role: 'user',
+            content: userInput
+        });
+        // Process each step to build proper message sequence
+        if (result.steps && result.steps.length > 0) {
+            for (let i = 0; i < result.steps.length; i++) {
+                const step = result.steps[i];
+                console.log(`Step ${i + 1}:`, {
+                    text: step.text,
+                    toolCalls: step.toolCalls?.length || 0,
+                    toolResults: step.toolResults?.length || 0
+                });
+                // Add assistant message with tool calls (if any)
+                if (step.toolCalls && step.toolCalls.length > 0) {
+                    const assistantMessage = {
+                        role: 'assistant',
+                        content: step.text || null,
+                        tool_calls: step.toolCalls.map((toolCall) => ({
+                            id: toolCall.toolCallId || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                            type: 'function',
+                            function: {
+                                name: toolCall.toolName,
+                                arguments: JSON.stringify(toolCall.args)
+                            }
+                        }))
+                    };
+                    messages.push(assistantMessage);
+                    // Add tool result messages
+                    if (step.toolResults && step.toolResults.length > 0) {
+                        for (const toolResult of step.toolResults) {
+                            messages.push({
+                                role: 'tool',
+                                tool_call_id: assistantMessage.tool_calls.find((tc) => tc.function.name === toolResult.toolName)?.id || `call_${Date.now()}`,
+                                content: typeof toolResult.result === 'string'
+                                    ? toolResult.result
+                                    : JSON.stringify(toolResult.result)
+                            });
+                            console.log('Tool result message:', toolResult.toolName, toolResult.result);
+                        }
+                    }
+                }
+                else if (step.text && step.text.trim()) {
+                    // Add regular assistant message without tool calls
+                    messages.push({
+                        role: 'assistant',
+                        content: step.text
+                    });
+                }
+            }
+        }
+        else if (result.text && result.text.trim()) {
+            // Add final assistant message if no steps
+            messages.push({
+                role: 'assistant',
+                content: result.text
+            });
+        }
+        // Save the message sequence to memory
+        // Use a special format to preserve the OpenAI message structure
+        const conversationData = {
+            format: 'openai_messages',
+            messages: messages,
+            timestamp: Date.now()
+        };
+        await memory.saveContext({ input: userInput }, { output: JSON.stringify(conversationData) });
+        console.log('✅ Successfully saved conversation in OpenAI format');
+        console.log('Total messages saved:', messages.length);
+        console.log('Message types:', messages.map(m => m.role).join(', '));
+    }
+    catch (error) {
+        console.warn('❌ Failed to save conversation to memory:', error);
+    }
+}
+// Function to define the inputs based on n8n AI ecosystem
+function getInputs() {
+    const getInputData = (inputs) => {
+        const displayNames = {
+            [n8n_workflow_1.NodeConnectionTypes.AiLanguageModel]: 'Chat Model',
+            [n8n_workflow_1.NodeConnectionTypes.AiMemory]: 'Memory',
+            [n8n_workflow_1.NodeConnectionTypes.AiTool]: 'Tool',
+            [n8n_workflow_1.NodeConnectionTypes.AiOutputParser]: 'Output Parser',
+        };
+        return inputs.map(({ type, filter, required }) => {
+            const input = {
+                type,
+                displayName: displayNames[type] || type,
+                required: required || type === n8n_workflow_1.NodeConnectionTypes.AiLanguageModel,
+                maxConnections: [n8n_workflow_1.NodeConnectionTypes.AiLanguageModel, n8n_workflow_1.NodeConnectionTypes.AiMemory, n8n_workflow_1.NodeConnectionTypes.AiOutputParser].includes(type)
+                    ? 1
+                    : undefined,
+            };
+            if (filter) {
+                input.filter = filter;
+            }
+            return input;
+        });
+    };
+    const specialInputs = [
+        {
+            type: n8n_workflow_1.NodeConnectionTypes.AiLanguageModel,
+            required: true,
+            filter: {
+                nodes: [
+                    '@n8n/n8n-nodes-langchain.lmChatAnthropic',
+                    '@n8n/n8n-nodes-langchain.lmChatAzureOpenAi',
+                    '@n8n/n8n-nodes-langchain.lmChatAwsBedrock',
+                    '@n8n/n8n-nodes-langchain.lmChatMistralCloud',
+                    '@n8n/n8n-nodes-langchain.lmChatOllama',
+                    '@n8n/n8n-nodes-langchain.lmChatOpenAi',
+                    '@n8n/n8n-nodes-langchain.lmChatGroq',
+                    '@n8n/n8n-nodes-langchain.lmChatGoogleVertex',
+                    '@n8n/n8n-nodes-langchain.lmChatGoogleGemini',
+                    '@n8n/n8n-nodes-langchain.lmChatDeepSeek',
+                    '@n8n/n8n-nodes-langchain.lmChatOpenRouter',
+                    '@n8n/n8n-nodes-langchain.lmChatXAiGrok',
+                    '@n8n/n8n-nodes-langchain.code',
+                ],
+            },
+        },
+        {
+            type: n8n_workflow_1.NodeConnectionTypes.AiMemory,
+        },
+        {
+            type: n8n_workflow_1.NodeConnectionTypes.AiTool,
+        },
+        {
+            type: n8n_workflow_1.NodeConnectionTypes.AiOutputParser,
+        },
+    ];
+    return ['main', ...getInputData(specialInputs)];
+}
+class BetterAiAgent {
+    description = {
+        displayName: 'Better AI Agent',
+        name: 'betterAiAgent',
+        icon: 'fa:robot',
+        iconColor: 'black',
+        group: ['transform'],
+        version: 13,
+        description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format)',
+        defaults: {
+            name: 'Better AI Agent',
+            color: '#1f77b4',
+        },
+        inputs: getInputs(),
+        outputs: ['main'],
+        properties: [
+            {
+                displayName: 'Tip: This node uses modern AI SDK with proper tool call memory management',
+                name: 'notice_tip',
+                type: 'notice',
+                default: '',
+            },
+            {
+                ...utils_1.promptTypeOptions,
+            },
+            {
+                ...utils_1.textFromPreviousNode,
+                displayOptions: {
+                    show: { promptType: ['auto'] },
+                },
+            },
+            {
+                ...utils_1.textInput,
+                displayOptions: {
+                    show: { promptType: ['define'] },
+                },
+            },
+            {
+                displayName: 'Options',
+                name: 'options',
+                type: 'collection',
+                default: {},
+                placeholder: 'Add Option',
+                options: [
+                    {
+                        displayName: 'System Message',
+                        name: 'systemMessage',
+                        type: 'string',
+                        default: 'You are a helpful AI assistant. Use the available tools when necessary to help the user accomplish their goals.',
+                        description: 'The system message that defines the agent behavior',
+                        typeOptions: {
+                            rows: 4,
+                        },
+                    },
+                    {
+                        displayName: 'Max Steps',
+                        name: 'maxSteps',
+                        type: 'number',
+                        default: 5,
+                        description: 'Maximum number of tool call steps before stopping',
+                        typeOptions: {
+                            min: 1,
+                            max: 20,
+                        },
+                    },
+                ],
+            },
+        ],
+    };
+    async execute() {
+        const items = this.getInputData();
+        const returnData = [];
+        // Get connected components
+        const connectedModel = await (0, utils_1.getConnectedModel)(this);
+        const connectedMemory = await (0, utils_1.getConnectedMemory)(this);
+        const connectedTools = await (0, utils_1.getConnectedTools)(this);
+        const connectedOutputParser = await (0, utils_1.getConnectedOutputParser)(this);
+        if (!connectedModel) {
+            throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'No language model connected');
+        }
+        // Convert n8n model to AI SDK model
+        const aiModel = convertN8nModelToAiSdk(connectedModel);
+        // Convert n8n tools to AI SDK tools
+        const aiTools = convertN8nToolsToAiSdk(connectedTools);
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+            try {
+                // Get input text
+                const input = (0, utils_1.getPromptInputByType)({
+                    ctx: this,
+                    i: itemIndex,
+                    inputKey: 'text',
+                    promptTypeKey: 'promptType',
+                });
+                if (!input) {
+                    throw new n8n_workflow_1.NodeOperationError(this.getNode(), 'No input text provided');
+                }
+                // Get options
+                const options = this.getNodeParameter('options', itemIndex, {});
+                // Get conversation history from memory if available
+                let messages = [];
+                if (connectedMemory && connectedMemory.chatHistory) {
+                    // Load conversation history and format it properly for AI SDK
+                    try {
+                        const history = connectedMemory.chatHistory.messages || [];
+                        console.log(`Loading ${history.length} messages from memory...`);
+                        // Process each message from memory
+                        for (const msg of history) {
+                            if (msg._getType && msg._getType() === 'human') {
+                                // Add user message
+                                messages.push({
+                                    role: 'user',
+                                    content: msg.content
+                                });
+                            }
+                            else if (msg._getType && msg._getType() === 'ai') {
+                                // Check if this is our new OpenAI format
+                                try {
+                                    const parsedOutput = JSON.parse(msg.content);
+                                    if (parsedOutput.format === 'openai_messages' && parsedOutput.messages) {
+                                        console.log('Found OpenAI format conversation:', parsedOutput.messages.length, 'messages');
+                                        // Add all messages from the OpenAI format (skip the user message since we already added it)
+                                        for (const openaiMsg of parsedOutput.messages) {
+                                            if (openaiMsg.role !== 'user') { // Skip user messages to avoid duplication
+                                                messages.push(openaiMsg);
+                                            }
+                                        }
+                                    }
+                                    else {
+                                        // Fallback to old text format
+                                        console.log('Found old text format conversation');
+                                        messages.push({
+                                            role: 'assistant',
+                                            content: msg.content
+                                        });
+                                    }
+                                }
+                                catch (parseError) {
+                                    // If not JSON, treat as regular text
+                                    console.log('Found plain text conversation');
+                                    messages.push({
+                                        role: 'assistant',
+                                        content: msg.content
+                                    });
+                                }
+                            }
+                        }
+                        console.log(`✅ Loaded ${messages.length} messages from conversation history`);
+                        console.log('Message types:', messages.map(m => m.role).join(', '));
+                    }
+                    catch (error) {
+                        console.warn('❌ Failed to load conversation history from memory:', error);
+                        // Continue without history if loading fails
+                    }
+                }
+                // Add system message if provided
+                if (options.systemMessage) {
+                    messages.unshift({
+                        role: 'system',
+                        content: options.systemMessage
+                    });
+                }
+                // Add the current user input
+                messages.push({
+                    role: 'user',
+                    content: input
+                });
+                // Generate response with AI SDK - using the pattern from the example
+                // Note: temperature, maxTokens, etc. come from the connected model, not node parameters
+                const result = await (0, ai_1.generateText)({
+                    model: aiModel, // Model settings (temperature, maxTokens) come from the connected model
+                    tools: aiTools,
+                    maxSteps: options.maxSteps || 5,
+                    messages, // Use the formatted conversation history
+                });
+                // Save conversation to memory after successful generation - INCLUDING TOOL CALLS
+                if (connectedMemory) {
+                    await saveToMemory(connectedMemory, input, result);
+                }
+                // Prepare output
+                returnData.push({
+                    json: {
+                        output: result.text,
+                        steps: result.steps || [],
+                        // Include debug information
+                        totalSteps: result.steps?.length || 0,
+                    },
+                });
+            }
+            catch (error) {
+                if (this.continueOnFail()) {
+                    returnData.push({
+                        json: { error: error.message },
+                        pairedItem: { item: itemIndex },
+                    });
+                    continue;
+                }
+                throw error;
+            }
+        }
+        return [returnData];
+    }
+}
+exports.BetterAiAgent = BetterAiAgent;

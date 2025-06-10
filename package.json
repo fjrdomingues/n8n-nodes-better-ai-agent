@@ -1,0 +1,46 @@
+{
+  "name": "@n8n/n8n-nodes-better-ai-agent",
+  "version": "1.0.0",
+  "description": "A better AI Agent node for n8n with improved memory management and modern AI SDK integration",
+  "main": "dist/BetterAiAgent.node.js",
+  "scripts": {
+    "build": "tsc && npm run copy-dependencies",
+    "copy-dependencies": "copyfiles -u 1 nodes/**/*.json dist/",
+    "dev": "tsc --watch",
+    "package": "npm run build && npm pack"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "nodes": [
+      "dist/SimpleBetterAiAgent.node.js"
+    ]
+  },
+  "keywords": [
+    "n8n-nodes-base",
+    "n8n",
+    "ai",
+    "agent",
+    "langchain",
+    "openai",
+    "anthropic"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "ai": "^3.4.9",
+    "@ai-sdk/openai": "^0.0.66",
+    "@ai-sdk/anthropic": "^0.0.54",
+    "n8n-workflow": "^1.94.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "copyfiles": "^2.4.1",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "n8n-workflow": ">=1.94.0"
+  }
+} 
