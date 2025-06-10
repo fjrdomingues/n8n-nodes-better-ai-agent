@@ -14,7 +14,7 @@ An improved AI Agent node for n8n that provides better memory management, modern
 ## Installation
 
 ```bash
-npm install @n8n/n8n-nodes-better-ai-agent
+npm install n8n-nodes-better-ai-agent
 ```
 
 ## Compatibility

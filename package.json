@@ -1,5 +1,5 @@
 {
-  "name": "@n8n/n8n-nodes-better-ai-agent",
+  "name": "n8n-nodes-better-ai-agent",
   "version": "1.0.0",
   "description": "A better AI Agent node for n8n with improved memory management and modern AI SDK integration",
   "main": "dist/BetterAiAgent.node.js",
@@ -15,7 +15,7 @@
   "n8n": {
     "n8nNodesApiVersion": 1,
     "nodes": [
-      "dist/SimpleBetterAiAgent.node.js"
+      "dist/BetterAiAgent.node.js"
     ]
   },
   "keywords": [
@@ -43,5 +43,9 @@
   },
   "peerDependencies": {
     "n8n-workflow": ">=1.94.0"
+  },
+  "engines": {
+    "node": ">=18",
+    "n8n": ">=1.24.0"
   }
 }
