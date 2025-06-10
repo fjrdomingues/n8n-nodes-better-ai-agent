@@ -25,7 +25,8 @@ import {
 	textInput,
 	textFromPreviousNode,
 } from './utils';
-import { ChatArrayMemory, ChatMessage } from './utils/chatArrayMemory';
+import { ChatArrayMemory } from './utils/chatArrayMemory';
+import type { CoreMessage, ToolCallPart, ToolResultPart, TextPart } from 'ai';
 
 // Helper function to convert n8n model to AI SDK compatible format
 function convertN8nModelToAiSdk(n8nModel: any): any {
@@ -357,42 +358,54 @@ function getInputs(): Array<NodeConnectionType | INodeInputConfiguration> {
 }
 
 /** Helper: convert ai-sdk result to OpenAI-style messages */
-function convertResultToChatMessages(result: any): ChatMessage[] {
-	const out: ChatMessage[] = [];
-	if (result.steps && result.steps.length > 0) {
-		for (const step of result.steps) {
-			if (step.toolCalls && step.toolCalls.length > 0) {
-				const assistantMsg: ChatMessage = {
-					role: 'assistant',
-					content: step.text || null,
-					tool_calls: step.toolCalls.map((tc: any) => ({
-						id: tc.toolCallId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-						type: 'function',
-						function: {
-							name: tc.toolName,
-							arguments: JSON.stringify(tc.args ?? {})
-						}
-					}))
-				};
-				out.push(assistantMsg);
+function convertResultToCoreMessages(result: any): CoreMessage[] {
+	const out: CoreMessage[] = [];
 
-				if (step.toolResults && step.toolResults.length > 0) {
-					for (const toolResult of step.toolResults) {
-						const callId = assistantMsg.tool_calls?.find(tc => tc.function.name === toolResult.toolName)?.id || assistantMsg.tool_calls?.[0]?.id || '';
-						out.push({
-							role: 'tool',
-							content: typeof toolResult.result === 'string' ? toolResult.result : JSON.stringify(toolResult.result),
-							tool_call_id: callId
-						} as ChatMessage);
-					}
+	if (Array.isArray(result.steps) && result.steps.length > 0) {
+		for (const step of result.steps) {
+			const { text, toolCalls = [], toolResults = [] } = step;
+
+			// ----- assistant message -----
+			if (text || toolCalls.length > 0) {
+				const parts: Array<TextPart | ToolCallPart> = [];
+				if (text && text.trim()) {
+					parts.push({ type: 'text', text });
 				}
-			} else if (step.text && step.text.trim()) {
-				out.push({ role: 'assistant', content: step.text } as ChatMessage);
+				for (const tc of toolCalls) {
+					parts.push({
+						type: 'tool-call',
+						toolCallId: tc.toolCallId || tc.id || `call_${Date.now()}`,
+						toolName: tc.toolName,
+						args: tc.args ?? {},
+					});
+				}
+
+				const assistantMsg: CoreMessage = {
+					role: 'assistant',
+					content: parts.length === 1 && parts[0].type === 'text' ? text : parts,
+				} as CoreMessage;
+				out.push(assistantMsg);
+			}
+
+			// ----- tool result message -----
+			if (toolResults.length > 0) {
+				const resultParts: ToolResultPart[] = toolResults.map((tr: any) => ({
+					type: 'tool-result',
+					toolCallId: tr.toolCallId || tr.id || tr.tool_call_id || 'unknown',
+					toolName: tr.toolName,
+					result: tr.result,
+				}));
+
+				out.push({
+					role: 'tool',
+					content: resultParts,
+				} as CoreMessage);
 			}
 		}
 	} else if (result.text) {
-		out.push({ role: 'assistant', content: result.text } as ChatMessage);
+		out.push({ role: 'assistant', content: result.text } as CoreMessage);
 	}
+
 	return out;
 }
 
@@ -513,7 +526,7 @@ export class BetterAiAgent implements INodeType {
 				}
 
 				// Load previous messages (if any)
-				let messages: ChatMessage[] = [];
+				let messages: CoreMessage[] = [];
 				if (memoryAdapter) {
 					try {
 						messages = await memoryAdapter.load();
@@ -536,16 +549,16 @@ export class BetterAiAgent implements INodeType {
 				// Generate response with AI SDK - using the pattern from the example
 				// Note: temperature, maxTokens, etc. come from the connected model, not node parameters
 				const result = await generateText({
-					model: aiModel, // Model settings (temperature, maxTokens) come from the connected model
+					model: aiModel,
 					tools: aiTools,
 					maxSteps: options.maxSteps || 5,
-					messages: messages as any, // cast to satisfy type compatibility
+					messages: messages as Array<CoreMessage>,
 				});
 
 				// Convert result steps to ChatMessage objects & persist
 				if (memoryAdapter) {
 					try {
-						const newMessages: ChatMessage[] = convertResultToChatMessages(result);
+						const newMessages: CoreMessage[] = convertResultToCoreMessages(result);
 						messages.push(...newMessages);
 						await memoryAdapter.save(messages);
 						console.log(`💾 Saved ${messages.length} messages (including new turn).`);

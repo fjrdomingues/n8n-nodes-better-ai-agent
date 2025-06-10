@@ -4,28 +4,9 @@ function approximateTokens(messages: unknown[]): number {
   return Math.ceil(text.length / 4);
 }
 
-/**
- * Lightweight wrapper that stores an array of OpenAI-style chat messages inside any
- * n8n/LangChain memory implementation.  This preserves tool_calls & tool role
- * data that would otherwise be lost by LangChain's default message classes.
- */
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content: string | null;
-  // assistant role when invoking functions
-  tool_calls?: Array<{
-    id: string;
-    type: 'function';
-    function: {
-      name: string;
-      arguments: string;
-    };
-  }>;
-  // tool role when responding
-  tool_call_id?: string;
-}
-
-type BaseMessage = { content: string; _getType(): string };
+import type { CoreMessage } from 'ai';
+import { AIMessage } from '@langchain/core/messages';
+type StoredMessage = { content: string; _getType?: () => string };
 
 export class ChatArrayMemory {
   constructor(
@@ -36,11 +17,11 @@ export class ChatArrayMemory {
   /**
    * Load the stored chat array.  Performs legacy-format migration if needed.
    */
-  async load(): Promise<ChatMessage[]> {
+  async load(): Promise<CoreMessage[]> {
     if (!this.memory.chatHistory || !this.memory.chatHistory.getMessages) {
       return [];
     }
-    const msgs: BaseMessage[] = await this.memory.chatHistory.getMessages();
+    const msgs: StoredMessage[] = await this.memory.chatHistory.getMessages();
     // Find last AIMessage whose content parses as array
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i];
@@ -49,7 +30,7 @@ export class ChatArrayMemory {
         if (typeof text === 'string') {
           try {
             const parsed = JSON.parse(text);
-            if (Array.isArray(parsed)) return parsed as ChatMessage[];
+            if (Array.isArray(parsed)) return parsed as CoreMessage[];
           } catch {}
         }
       }
@@ -58,17 +39,13 @@ export class ChatArrayMemory {
   }
 
   /** Save messages, performing optional trimming first */
-  async save(messages: ChatMessage[]): Promise<void> {
-    let finalMessages: ChatMessage[] = messages;
+  async save(messages: CoreMessage[]): Promise<void> {
+    let finalMessages: CoreMessage[] = messages;
     if (this.maxContextTokens !== null) {
       finalMessages = this.trimToFit(messages, this.maxContextTokens);
     }
     if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
-      const msg: BaseMessage = {
-        content: JSON.stringify(finalMessages),
-        _getType() { return 'ai'; }
-      } as any;
-      await this.memory.chatHistory.addMessage(msg);
+      await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(finalMessages)));
     }
   }
 
@@ -76,7 +53,7 @@ export class ChatArrayMemory {
    * Trim oldest messages until estimated token count fits under limit.
    * Very naive: drops oldest message one-by-one; can be improved later.
    */
-  private trimToFit(messages: ChatMessage[], maxTokens: number): ChatMessage[] {
+  private trimToFit(messages: CoreMessage[], maxTokens: number): CoreMessage[] {
     const out = [...messages];
     while (out.length > 1 && approximateTokens(out) > maxTokens) {
       out.shift();

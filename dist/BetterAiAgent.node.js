@@ -304,37 +304,43 @@ function getInputs() {
     return ['main', ...getInputData(specialInputs)];
 }
 /** Helper: convert ai-sdk result to OpenAI-style messages */
-function convertResultToChatMessages(result) {
+function convertResultToCoreMessages(result) {
     const out = [];
-    if (result.steps && result.steps.length > 0) {
+    if (Array.isArray(result.steps) && result.steps.length > 0) {
         for (const step of result.steps) {
-            if (step.toolCalls && step.toolCalls.length > 0) {
+            const { text, toolCalls = [], toolResults = [] } = step;
+            // ----- assistant message -----
+            if (text || toolCalls.length > 0) {
+                const parts = [];
+                if (text && text.trim()) {
+                    parts.push({ type: 'text', text });
+                }
+                for (const tc of toolCalls) {
+                    parts.push({
+                        type: 'tool-call',
+                        toolCallId: tc.toolCallId || tc.id || `call_${Date.now()}`,
+                        toolName: tc.toolName,
+                        args: tc.args ?? {},
+                    });
+                }
                 const assistantMsg = {
                     role: 'assistant',
-                    content: step.text || null,
-                    tool_calls: step.toolCalls.map((tc) => ({
-                        id: tc.toolCallId || `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-                        type: 'function',
-                        function: {
-                            name: tc.toolName,
-                            arguments: JSON.stringify(tc.args ?? {})
-                        }
-                    }))
+                    content: parts.length === 1 && parts[0].type === 'text' ? text : parts,
                 };
                 out.push(assistantMsg);
-                if (step.toolResults && step.toolResults.length > 0) {
-                    for (const toolResult of step.toolResults) {
-                        const callId = assistantMsg.tool_calls?.find(tc => tc.function.name === toolResult.toolName)?.id || assistantMsg.tool_calls?.[0]?.id || '';
-                        out.push({
-                            role: 'tool',
-                            content: typeof toolResult.result === 'string' ? toolResult.result : JSON.stringify(toolResult.result),
-                            tool_call_id: callId
-                        });
-                    }
-                }
             }
-            else if (step.text && step.text.trim()) {
-                out.push({ role: 'assistant', content: step.text });
+            // ----- tool result message -----
+            if (toolResults.length > 0) {
+                const resultParts = toolResults.map((tr) => ({
+                    type: 'tool-result',
+                    toolCallId: tr.toolCallId || tr.id || tr.tool_call_id || 'unknown',
+                    toolName: tr.toolName,
+                    result: tr.result,
+                }));
+                out.push({
+                    role: 'tool',
+                    content: resultParts,
+                });
             }
         }
     }
@@ -468,15 +474,15 @@ class BetterAiAgent {
                 // Generate response with AI SDK - using the pattern from the example
                 // Note: temperature, maxTokens, etc. come from the connected model, not node parameters
                 const result = await (0, ai_1.generateText)({
-                    model: aiModel, // Model settings (temperature, maxTokens) come from the connected model
+                    model: aiModel,
                     tools: aiTools,
                     maxSteps: options.maxSteps || 5,
-                    messages: messages, // cast to satisfy type compatibility
+                    messages: messages,
                 });
                 // Convert result steps to ChatMessage objects & persist
                 if (memoryAdapter) {
                     try {
-                        const newMessages = convertResultToChatMessages(result);
+                        const newMessages = convertResultToCoreMessages(result);
                         messages.push(...newMessages);
                         await memoryAdapter.save(messages);
                         console.log(`💾 Saved ${messages.length} messages (including new turn).`);
