@@ -18,9 +18,19 @@ export class ChatArrayMemory {
    * Load the stored chat array.  Performs legacy-format migration if needed.
    */
   async load(): Promise<CoreMessage[]> {
+    // 1) Trigger BufferMemory wrapper (and therefore n8n Postgres node logging)
+    try {
+      if (typeof this.memory.loadMemoryVariables === 'function') {
+        await this.memory.loadMemoryVariables({ input: '__load__' });
+      }
+    } catch (e) {
+      // non-fatal – continue with manual fetch
+    }
+
     if (!this.memory.chatHistory || !this.memory.chatHistory.getMessages) {
       return [];
     }
+
     const msgs: StoredMessage[] = await this.memory.chatHistory.getMessages();
     // Find last AIMessage whose content parses as array
     for (let i = msgs.length - 1; i >= 0; i--) {
