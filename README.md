@@ -9,7 +9,9 @@ An improved AI Agent node for n8n that provides better memory management, modern
 - 🔧 **Better Tool Integration**: Seamless compatibility with existing n8n tools
 - ⚡ **Simplified Architecture**: Single agent type that handles all use cases
 - 📝 **Structured Outputs**: Enhanced JSON schema support and validation
-- 🔄 **Streaming Support**: Built-in streaming capabilities (future feature)
+- 📡 **Live Streaming Updates**: Intermediate Webhook URL lets you push each agent step in real-time
+- 🔈 **Verbose Logs Toggle**: Turn detailed console output on/off from the node UI
+- 🛠️ **One-command Deploy**: `npm run deploy-local` builds & copies the node into `~/.n8n/custom/`
 
 ## Installation
 
@@ -63,6 +65,8 @@ Choose how to provide the user prompt:
 
 - **System Message**: Define the agent's behavior and personality
 - **Max Tool Calls**: Limit the number of tool interaction rounds
+- **Intermediate Webhook URL**: Send each partial reply/tool-call to an external workflow in real-time
+- **Verbose Logs**: Enable/disable detailed console logging
 - **Temperature**: Control response creativity (0.0 = deterministic, 1.0 = creative)
 - **Max Tokens**: Set response length limits
 
@@ -100,7 +104,7 @@ Uses modern patterns from Vercel AI SDK:
 - Built-in tool calling support
 - Automatic conversation management
 - Better error handling
-- Streaming capabilities (future)
+- Real-time step streaming via `onStepFinish`
 
 ## Development
 
