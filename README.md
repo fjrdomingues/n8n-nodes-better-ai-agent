@@ -4,14 +4,14 @@ An improved AI Agent node for n8n that provides better memory management, modern
 
 ## Features
 
-- 🧠 **Proper Memory Management**: Tool calls and responses are correctly saved to conversation memory
-- 🚀 **Modern AI SDK**: Uses Vercel AI SDK instead of deprecated LangChain patterns
+- 🧠 **Conversation Memory that includes Tools** – every user message, tool call and tool result is stored.
+- 🚀 **Modern AI SDK Providers** – wraps OpenAI, Gemini and Anthropic through Vercel AI SDK.
 - 🔧 **Better Tool Integration**: Seamless compatibility with existing n8n tools
 - ⚡ **Simplified Architecture**: Single agent type that handles all use cases
 - 📝 **Structured Outputs**: Enhanced JSON schema support and validation
 - 📡 **Live Streaming Updates**: Intermediate Webhook URL lets you push each agent step in real-time
-- 🔈 **Verbose Logs Toggle**: Turn detailed console output on/off from the node UI
-- 🛠️ **One-command Deploy**: `npm run deploy-local` builds & copies the node into `~/.n8n/custom/`
+- 🔈 **Verbose Logs Switch** – toggle detailed console logs without rebuilding.
+- 🛠 **`npm run deploy-local`** – build & copy into `~/.n8n/custom/` in one command.
 
 ## Installation
 
@@ -105,6 +105,15 @@ Uses modern patterns from Vercel AI SDK:
 - Automatic conversation management
 - Better error handling
 - Real-time step streaming via `onStepFinish`
+
+### Known Limitations
+
+| Limitation | Work-around |
+|------------|------------|
+| n8n UI does not highlight the attached model or tool nodes because only the Agent executes code | Rely on the Agent output or streamed webhook messages for visibility |
+| Tool nodes without an explicit Zod/JSON schema (e.g. raw HTTP Request) may receive incorrect argument keys | Wrap such tools in a **Custom Code Tool** and define a schema, or add few-shot examples |
+| Streaming is step-level, not token-level; the n8n node outputs only when the Agent finishes | Use the Intermediate Webhook to push interim messages to a Chat, Slack, etc. |
+| The node's dependencies must be available next to `~/.n8n/custom/BetterAiAgent.node.js` | Run `npm run deploy-local` (copies `package.json` and installs runtime deps) |
 
 ## Development
 
