@@ -13,6 +13,7 @@ import {
 import { generateText, tool } from 'ai';
 import { openai, createOpenAI } from '@ai-sdk/openai';
 import { anthropic, createAnthropic } from '@ai-sdk/anthropic';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 import {
@@ -27,6 +28,17 @@ import {
 } from './utils';
 import { ChatArrayMemory } from './utils/chatArrayMemory';
 import type { CoreMessage, ToolCallPart, ToolResultPart, TextPart } from 'ai';
+
+// Patch console.log once to respect global verbose flag
+if (!(globalThis as any).__BAA_LOG_PATCHED) {
+	const originalLog = console.log.bind(console);
+	console.log = (...args: unknown[]): void => {
+		if ((globalThis as any).__BAA_VERBOSE) {
+			originalLog(...args);
+		}
+	};
+	(globalThis as any).__BAA_LOG_PATCHED = true;
+}
 
 // Helper function to convert n8n model to AI SDK compatible format
 function convertN8nModelToAiSdk(n8nModel: any): any {
@@ -84,6 +96,25 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 			console.log('No API key found, using default openai provider');
 			return openai(modelName, settings);
 		}
+	}
+	
+	// Check if it's a Google Generative AI model (Gemini) – case-insensitive to handle variations like ChatGoogleGenerativeAi
+	const ctorName = n8nModel.constructor?.name?.toLowerCase() || '';
+	if (ctorName.includes('googlegenerativeai') || ctorName.includes('gemini')) {
+
+		const settings: any = {};
+		if (n8nModel.temperature !== undefined) settings.temperature = n8nModel.temperature;
+		if (n8nModel.topP !== undefined) settings.topP = n8nModel.topP;
+
+		const apiKey = n8nModel.apiKey || process.env.GOOGLE_AI_API_KEY;
+		if (!apiKey) {
+			throw new Error('Google Generative AI API key missing');
+		}
+
+		console.log('Using createGoogleGenerativeAI with explicit API key');
+		const geminiProvider = createGoogleGenerativeAI({ apiKey, ...settings });
+		const modelName = n8nModel.modelName || 'gemini-pro';
+		return geminiProvider(modelName);
 	}
 	
 	// Check if it's an Anthropic model
@@ -474,6 +505,20 @@ export class BetterAiAgent implements INodeType {
 							max: 20,
 						},
 					},
+					{
+						displayName: 'Intermediate Webhook URL',
+						name: 'intermediateWebhookUrl',
+						type: 'string',
+						default: '',
+						description: 'If set, the node POSTs every partial reply/tool-call as JSON to this URL while the agent is running',
+					},
+					{
+						displayName: 'Verbose Logs',
+						name: 'verboseLogs',
+						type: 'boolean',
+						default: false,
+						description: 'Enable detailed console logging for debugging',
+					},
 				],
 			},
 		],
@@ -482,6 +527,10 @@ export class BetterAiAgent implements INodeType {
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
+
+		// Determine verbose flag once (from first item options) so logs are suppressed before conversion
+		const initialOpts = this.getNodeParameter('options', 0, {}) as { verboseLogs?: boolean };
+		(globalThis as any).__BAA_VERBOSE = !!initialOpts.verboseLogs;
 
 		// Get connected components
 		const connectedModel = await getConnectedModel(this);
@@ -517,6 +566,26 @@ export class BetterAiAgent implements INodeType {
 				const options = this.getNodeParameter('options', itemIndex, {}) as {
 					systemMessage?: string;
 					maxSteps?: number;
+					intermediateWebhookUrl?: string;
+					verboseLogs?: boolean;
+				};
+
+				// Helper to POST intermediate updates without blocking execution
+				const runId = (globalThis.crypto?.randomUUID?.() as string | undefined) ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+				const postIntermediate = (payload: Record<string, unknown>): void => {
+					if (!options.intermediateWebhookUrl) return;
+					try {
+						const fetchFn = (globalThis as any).fetch as (typeof fetch | undefined);
+						if (fetchFn) {
+							void fetchFn(options.intermediateWebhookUrl as string, {
+								method: 'POST',
+								headers: { 'content-type': 'application/json' },
+								body: JSON.stringify(payload),
+							});
+						}
+					} catch (err) {
+						console.warn('❌ Failed to post intermediate webhook:', err);
+					}
 				};
 
 				// Initialize memory adapter
@@ -548,11 +617,24 @@ export class BetterAiAgent implements INodeType {
 
 				// Generate response with AI SDK - using the pattern from the example
 				// Note: temperature, maxTokens, etc. come from the connected model, not node parameters
+				let stepCount = 0;
 				const result = await generateText({
 					model: aiModel,
 					tools: aiTools,
 					maxSteps: options.maxSteps || 5,
 					messages: messages as Array<CoreMessage>,
+					onStepFinish: ({ text, toolCalls, toolResults }) => {
+						postIntermediate({
+							version: 1,
+							runId,
+							step: stepCount,
+							text,
+							toolCalls,
+							toolResults,
+							done: false,
+						});
+						stepCount += 1;
+					},
 				});
 
 				// Convert result steps to ChatMessage objects & persist

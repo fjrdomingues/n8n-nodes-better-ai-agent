@@ -7,7 +7,8 @@
     "build": "tsc && npm run copy-dependencies",
     "copy-dependencies": "copyfiles -u 1 nodes/**/*.json dist/",
     "dev": "tsc --watch",
-    "package": "npm run build && npm pack"
+    "package": "npm run build && npm pack",
+    "deploy-local": "npm run build && cp -R dist/* ~/.n8n/custom/"
   },
   "files": [
     "dist"
@@ -32,6 +33,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^0.0.54",
     "@ai-sdk/openai": "^0.0.66",
+    "@ai-sdk/google": "^1.2.19",
     "@langchain/core": "0.1.18",
     "ai": "^3.4.9",
     "n8n-workflow": ">=1.94.0",
