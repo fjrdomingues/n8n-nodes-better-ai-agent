@@ -1,17 +1,12 @@
 # Better AI Agent for n8n
 
-An improved AI Agent node for n8n that provides better memory management, modern AI SDK integration, and proper tool call handling.
+An improved AI Agent node for n8n that provides better memory management, modern AI SDK integration and a webhook option to push intermediate messages as they happen.
 
 ## Features
 
-- 🧠 **Conversation Memory that includes Tools** – every user message, tool call and tool result is stored.
-- 🚀 **Modern AI SDK Providers** – wraps OpenAI, Gemini and Anthropic through Vercel AI SDK.
-- 🔧 **Better Tool Integration**: Seamless compatibility with existing n8n tools
-- ⚡ **Simplified Architecture**: Single agent type that handles all use cases
-- 📝 **Structured Outputs**: Enhanced JSON schema support and validation
-- 📡 **Live Streaming Updates**: Intermediate Webhook URL lets you push each agent step in real-time
-- 🔈 **Verbose Logs Switch** – toggle detailed console logs without rebuilding.
-- 🛠 **`npm run deploy-local`** – build & copy into `~/.n8n/custom/` in one command.
+- **Conversation Memory that includes Tools** – every user message, tool call and tool result is stored.
+- **Modern AI SDK Providers** – wraps OpenAI, Gemini and Anthropic through Vercel AI SDK.
+- **Live Streaming Updates**: Intermediate Webhook URL lets you push each agent step in real-time
 
 ## Installation
 
