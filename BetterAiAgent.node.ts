@@ -67,20 +67,29 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 	if (n8nModel.constructor?.name?.includes('ChatOpenAI') || 
 		n8nModel.constructor?.name?.includes('OpenAI')) {
 		
-		// Extract settings from the LangChain model
-		const settings: any = {};
+		// Settings that should be sent with the model invocation (generation parameters)
+		const modelSettings: any = {};
+		// Settings that belong to the provider (transport-level)
+		const providerSettings: any = {};
 		const temp = readModelSetting(n8nModel, 'temperature');
 		const topP = readModelSetting(n8nModel, 'topP');
 		const maxTokens = readModelSetting(n8nModel, 'maxTokens');
 		const freqPen = readModelSetting(n8nModel, 'frequencyPenalty');
 		const presPen = readModelSetting(n8nModel, 'presencePenalty');
 		const reasoningEffort = readModelSetting(n8nModel, 'reasoningEffort');
-		if (temp !== undefined && temp !== 0) settings.temperature = temp;
-		if (maxTokens !== undefined) settings.maxTokens = maxTokens;
-		if (topP !== undefined) settings.topP = topP;
-		if (freqPen !== undefined) settings.frequencyPenalty = freqPen;
-		if (presPen !== undefined) settings.presencePenalty = presPen;
-		if (reasoningEffort !== undefined) settings.reasoningEffort = reasoningEffort;
+		if (temp !== undefined && temp !== 0) {
+			// User explicitly set a non-zero temperature – use it as is
+			modelSettings.temperature = temp;
+		} else if ((temp === undefined || temp === 0) && (/^o\d/.test(modelName) || /^gpt-4o/.test(modelName))) {
+			// OpenAI "o" family (o1, o3, o4…) *and* gpt-4o models mandate temperature=1
+			console.log('Auto-setting temperature=1 for o-family / gpt-4o model');
+			modelSettings.temperature = 1;
+		}
+		if (maxTokens !== undefined) modelSettings.maxTokens = maxTokens;
+		if (topP !== undefined) modelSettings.topP = topP;
+		if (freqPen !== undefined) modelSettings.frequencyPenalty = freqPen;
+		if (presPen !== undefined) modelSettings.presencePenalty = presPen;
+		if (reasoningEffort !== undefined) modelSettings.reasoningEffort = reasoningEffort;
 		
 		// Extract API key from the LangChain model
 		const apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
@@ -98,7 +107,7 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		
 		// Extract base URL if it exists (for Azure OpenAI, etc.)
 		if (n8nModel.configuration?.baseURL) {
-			settings.baseURL = n8nModel.configuration.baseURL;
+			providerSettings.baseURL = n8nModel.configuration.baseURL;
 		}
 		
 		// Use createOpenAI with explicit API key instead of openai()
@@ -106,12 +115,12 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 			console.log('Using createOpenAI with explicit API key');
 			const openaiProvider = createOpenAI({
 				apiKey: finalApiKey,
-				...settings
+				...providerSettings,
 			});
-			return openaiProvider(modelName);
+			return openaiProvider(modelName, modelSettings);
 		} else {
 			console.log('No API key found, using default openai provider');
-			return openai(modelName, settings);
+			return openai(modelName, { ...providerSettings, ...modelSettings });
 		}
 	}
 	
@@ -656,12 +665,11 @@ export class BetterAiAgent implements INodeType {
 				// Generate response with AI SDK - using the pattern from the example
 				// Note: temperature, maxTokens, etc. come from the connected model, not node parameters
 				let stepCount = 0;
-				const result = await generateText({
+				const genArgs: any = {
 					model: aiModel,
-					tools: aiTools,
 					maxSteps: options.maxSteps || 5,
 					messages: messages as Array<CoreMessage>,
-					onStepFinish: ({ text, toolCalls, toolResults }) => {
+					onStepFinish: ({ text, toolCalls, toolResults }: any) => {
 						postIntermediate({
 							version: 1,
 							runId,
@@ -673,7 +681,36 @@ export class BetterAiAgent implements INodeType {
 						});
 						stepCount += 1;
 					},
-				});
+				};
+
+				// Extract generation settings from the model and pass them explicitly to generateText
+				// This prevents AI SDK from using its own defaults (like temperature: 0)
+				if (aiModel.settings) {
+					if (aiModel.settings.temperature !== undefined) {
+						genArgs.temperature = aiModel.settings.temperature;
+					}
+					if (aiModel.settings.topP !== undefined) {
+						genArgs.topP = aiModel.settings.topP;
+					}
+					if (aiModel.settings.frequencyPenalty !== undefined) {
+						genArgs.frequencyPenalty = aiModel.settings.frequencyPenalty;
+					}
+					if (aiModel.settings.presencePenalty !== undefined) {
+						genArgs.presencePenalty = aiModel.settings.presencePenalty;
+					}
+					if (aiModel.settings.maxTokens !== undefined) {
+						genArgs.maxTokens = aiModel.settings.maxTokens;
+					}
+					if (aiModel.settings.reasoningEffort !== undefined) {
+						genArgs.reasoningEffort = aiModel.settings.reasoningEffort;
+					}
+				}
+
+				if (Object.keys(aiTools).length > 0) {
+					genArgs.tools = aiTools;
+				}
+				
+				const result = await generateText(genArgs);
 
 				// Convert result steps to ChatMessage objects & persist
 				if (memoryAdapter) {
