@@ -40,6 +40,16 @@ if (!(globalThis as any).__BAA_LOG_PATCHED) {
 	(globalThis as any).__BAA_LOG_PATCHED = true;
 }
 
+// Generic helper: pull a numeric or string setting from multiple possible paths on the LangChain model
+function readModelSetting(model: any, key: string): any {
+	if (!model) return undefined;
+	if (model[key] !== undefined) return model[key];
+	if (model.options && model.options[key] !== undefined) return model.options[key];
+	if (model.clientConfig && model.clientConfig[key] !== undefined) return model.clientConfig[key];
+	if (model.kwargs && model.kwargs[key] !== undefined) return model.kwargs[key];
+	return undefined;
+}
+
 // Helper function to convert n8n model to AI SDK compatible format
 function convertN8nModelToAiSdk(n8nModel: any): any {
 	if (!n8nModel) {
@@ -59,11 +69,16 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		
 		// Extract settings from the LangChain model
 		const settings: any = {};
-		if (n8nModel.temperature !== undefined) settings.temperature = n8nModel.temperature;
-		if (n8nModel.maxTokens !== undefined) settings.maxTokens = n8nModel.maxTokens;
-		if (n8nModel.topP !== undefined) settings.topP = n8nModel.topP;
-		if (n8nModel.frequencyPenalty !== undefined) settings.frequencyPenalty = n8nModel.frequencyPenalty;
-		if (n8nModel.presencePenalty !== undefined) settings.presencePenalty = n8nModel.presencePenalty;
+		const temp = readModelSetting(n8nModel, 'temperature');
+		const topP = readModelSetting(n8nModel, 'topP');
+		const maxTokens = readModelSetting(n8nModel, 'maxTokens');
+		const freqPen = readModelSetting(n8nModel, 'frequencyPenalty');
+		const presPen = readModelSetting(n8nModel, 'presencePenalty');
+		if (temp !== undefined) settings.temperature = temp;
+		if (maxTokens !== undefined) settings.maxTokens = maxTokens;
+		if (topP !== undefined) settings.topP = topP;
+		if (freqPen !== undefined) settings.frequencyPenalty = freqPen;
+		if (presPen !== undefined) settings.presencePenalty = presPen;
 		
 		// Extract API key from the LangChain model
 		const apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
@@ -103,8 +118,10 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 	if (ctorName.includes('googlegenerativeai') || ctorName.includes('gemini')) {
 
 		const settings: any = {};
-		if (n8nModel.temperature !== undefined) settings.temperature = n8nModel.temperature;
-		if (n8nModel.topP !== undefined) settings.topP = n8nModel.topP;
+		const gemTemp = readModelSetting(n8nModel, 'temperature');
+		const gemTopP = readModelSetting(n8nModel, 'topP');
+		if (gemTemp !== undefined) settings.temperature = gemTemp;
+		if (gemTopP !== undefined) settings.topP = gemTopP;
 
 		const apiKey = n8nModel.apiKey || process.env.GOOGLE_AI_API_KEY;
 		if (!apiKey) {
@@ -122,9 +139,12 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		n8nModel.constructor?.name?.includes('Anthropic')) {
 		
 		const settings: any = {};
-		if (n8nModel.temperature !== undefined) settings.temperature = n8nModel.temperature;
-		if (n8nModel.maxTokens !== undefined) settings.maxTokens = n8nModel.maxTokens;
-		if (n8nModel.topP !== undefined) settings.topP = n8nModel.topP;
+		const aTemp = readModelSetting(n8nModel, 'temperature');
+		const aTopP = readModelSetting(n8nModel, 'topP');
+		const aMax = readModelSetting(n8nModel, 'maxTokens');
+		if (aTemp !== undefined) settings.temperature = aTemp;
+		if (aMax !== undefined) settings.maxTokens = aMax;
+		if (aTopP !== undefined) settings.topP = aTopP;
 		
 		// Extract API key for Anthropic
 		const apiKey = n8nModel.anthropicApiKey || n8nModel.apiKey;
@@ -461,7 +481,7 @@ export class BetterAiAgent implements INodeType {
 		icon: 'fa:robot',
 		iconColor: 'black',
 		group: ['transform'],
-		version: 13,
+		version: 14,
 		description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format)',
 		defaults: {
 			name: 'Better AI Agent',
