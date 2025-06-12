@@ -148,14 +148,28 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 	return openai('gpt-4o-mini');
 }
 
+// Recursively flatten arrays or containers that expose a .tools array (e.g., McpToolkit)
+function* flattenTools(toolOrArray: any): Iterable<any> {
+	if (!toolOrArray) return;
+	if (Array.isArray(toolOrArray)) {
+		for (const t of toolOrArray) yield* flattenTools(t);
+	} else if (toolOrArray.tools && Array.isArray(toolOrArray.tools)) {
+		// MCP toolkit or similar wrapper
+		yield* flattenTools(toolOrArray.tools);
+	} else {
+		yield toolOrArray;
+	}
+}
+
 // Helper function to convert n8n tools to AI SDK tools
 function convertN8nToolsToAiSdk(n8nTools: any[]): Record<string, any> {
 	const tools: Record<string, any> = {};
 	
+	const flatTools = Array.from(flattenTools(n8nTools));
 	console.log('Converting n8n tools to AI SDK format:');
-	console.log('Number of tools:', n8nTools.length);
+	console.log('Number of tools after flatten:', flatTools.length);
 	
-	for (const n8nTool of n8nTools) {
+	for (const n8nTool of flatTools) {
 		console.log('n8n Tool:', {
 			name: n8nTool?.name,
 			description: n8nTool?.description,
