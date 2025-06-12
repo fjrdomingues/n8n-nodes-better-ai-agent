@@ -8,7 +8,7 @@
     "copy-dependencies": "copyfiles -u 1 nodes/**/*.json dist/",
     "dev": "tsc --watch",
     "package": "npm run build && npm pack",
-    "deploy-local": "npm run build && cp -R dist/* ~/.n8n/custom/"
+    "deploy-local": "npm run build && cp package.json ~/.n8n/custom/ && cp -R dist/* ~/.n8n/custom/ && npm install --omit=dev --prefix ~/.n8n/custom"
   },
   "files": [
     "dist"
