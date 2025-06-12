@@ -43,8 +43,8 @@ if (!(globalThis as any).__BAA_LOG_PATCHED) {
 // Generic helper: pull a numeric or string setting from multiple possible paths on the LangChain model
 function readModelSetting(model: any, key: string): any {
 	if (!model) return undefined;
-	if (model[key] !== undefined) return model[key];
 	if (model.options && model.options[key] !== undefined) return model.options[key];
+	if (model[key] !== undefined) return model[key];
 	if (model.clientConfig && model.clientConfig[key] !== undefined) return model.clientConfig[key];
 	if (model.kwargs && model.kwargs[key] !== undefined) return model.kwargs[key];
 	return undefined;
@@ -74,11 +74,13 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		const maxTokens = readModelSetting(n8nModel, 'maxTokens');
 		const freqPen = readModelSetting(n8nModel, 'frequencyPenalty');
 		const presPen = readModelSetting(n8nModel, 'presencePenalty');
-		if (temp !== undefined) settings.temperature = temp;
+		const reasoningEffort = readModelSetting(n8nModel, 'reasoningEffort');
+		if (temp !== undefined && temp !== 0) settings.temperature = temp;
 		if (maxTokens !== undefined) settings.maxTokens = maxTokens;
 		if (topP !== undefined) settings.topP = topP;
 		if (freqPen !== undefined) settings.frequencyPenalty = freqPen;
 		if (presPen !== undefined) settings.presencePenalty = presPen;
+		if (reasoningEffort !== undefined) settings.reasoningEffort = reasoningEffort;
 		
 		// Extract API key from the LangChain model
 		const apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
@@ -120,7 +122,7 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		const settings: any = {};
 		const gemTemp = readModelSetting(n8nModel, 'temperature');
 		const gemTopP = readModelSetting(n8nModel, 'topP');
-		if (gemTemp !== undefined) settings.temperature = gemTemp;
+		if (gemTemp !== undefined && gemTemp !== 0) settings.temperature = gemTemp;
 		if (gemTopP !== undefined) settings.topP = gemTopP;
 
 		const apiKey = n8nModel.apiKey || process.env.GOOGLE_AI_API_KEY;
@@ -142,9 +144,11 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		const aTemp = readModelSetting(n8nModel, 'temperature');
 		const aTopP = readModelSetting(n8nModel, 'topP');
 		const aMax = readModelSetting(n8nModel, 'maxTokens');
-		if (aTemp !== undefined) settings.temperature = aTemp;
+		const aReason = readModelSetting(n8nModel, 'reasoningEffort');
+		if (aTemp !== undefined && aTemp !== 0) settings.temperature = aTemp;
 		if (aMax !== undefined) settings.maxTokens = aMax;
 		if (aTopP !== undefined) settings.topP = aTopP;
+		if (aReason !== undefined) settings.reasoningEffort = aReason;
 		
 		// Extract API key for Anthropic
 		const apiKey = n8nModel.anthropicApiKey || n8nModel.apiKey;
@@ -481,7 +485,7 @@ export class BetterAiAgent implements INodeType {
 		icon: 'fa:robot',
 		iconColor: 'black',
 		group: ['transform'],
-		version: 14,
+		version: 15,
 		description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format)',
 		defaults: {
 			name: 'Better AI Agent',
