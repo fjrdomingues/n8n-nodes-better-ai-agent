@@ -63,6 +63,15 @@ export class ChatArrayMemory {
       finalMessages = messages.slice(-this.maxMessages);
     }
 
+    // --- Sanitize conversation to avoid orphan `tool` messages ---------------
+    // If truncation cut off the preceding assistant/tool_calls pair, we might
+    // start the window with a lone `tool` message.  Simply drop *leading*
+    // `tool` messages until the first message is not a tool.
+
+    while (finalMessages.length > 0 && finalMessages[0].role === 'tool') {
+      finalMessages.shift();
+    }
+
     if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
       await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(finalMessages)));
     }

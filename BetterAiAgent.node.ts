@@ -526,7 +526,7 @@ export class BetterAiAgent implements INodeType {
 		icon: 'fa:robot',
 		iconColor: 'black',
 		group: ['transform'],
-		version: 15.1,
+		version: 16,
 		description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format)',
 		defaults: {
 			name: 'Better AI Agent',
