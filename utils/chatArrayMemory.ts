@@ -1,9 +1,3 @@
-/** Rough token estimator (~4 chars per token) to avoid bringing in heavy encoders. */
-function approximateTokens(messages: unknown[]): number {
-  const text = JSON.stringify(messages);
-  return Math.ceil(text.length / 4);
-}
-
 import type { CoreMessage } from 'ai';
 import { AIMessage } from '@langchain/core/messages';
 type StoredMessage = { content: string; _getType?: () => string };
@@ -11,7 +5,13 @@ type StoredMessage = { content: string; _getType?: () => string };
 export class ChatArrayMemory {
   constructor(
     private readonly memory: any, // BufferMemory or BufferWindowMemory
-    private readonly maxContextTokens: number | null = null,
+    /**
+     * Optional hard limit on the number of messages to keep. If provided, the
+     * stored conversation will be truncated to the *last* `maxMessages` items
+     * before persisting so that upstream BufferWindowMemory `k` setting is
+     * respected.
+     */
+    private readonly maxMessages: number | null = null,
   ) {}
 
   /**
@@ -40,7 +40,13 @@ export class ChatArrayMemory {
         if (typeof text === 'string') {
           try {
             const parsed = JSON.parse(text);
-            if (Array.isArray(parsed)) return parsed as CoreMessage[];
+            if (Array.isArray(parsed)) {
+              const arr = parsed as CoreMessage[];
+              if (this.maxMessages !== null && this.maxMessages > 0 && arr.length > this.maxMessages) {
+                return arr.slice(-this.maxMessages);
+              }
+              return arr;
+            }
           } catch {}
         }
       }
@@ -51,23 +57,14 @@ export class ChatArrayMemory {
   /** Save messages, performing optional trimming first */
   async save(messages: CoreMessage[]): Promise<void> {
     let finalMessages: CoreMessage[] = messages;
-    if (this.maxContextTokens !== null) {
-      finalMessages = this.trimToFit(messages, this.maxContextTokens);
+
+    // Respect message limit (if provided) by keeping only the most recent ones
+    if (this.maxMessages !== null && this.maxMessages > 0) {
+      finalMessages = messages.slice(-this.maxMessages);
     }
+
     if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
       await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(finalMessages)));
     }
-  }
-
-  /**
-   * Trim oldest messages until estimated token count fits under limit.
-   * Very naive: drops oldest message one-by-one; can be improved later.
-   */
-  private trimToFit(messages: CoreMessage[], maxTokens: number): CoreMessage[] {
-    const out = [...messages];
-    while (out.length > 1 && approximateTokens(out) > maxTokens) {
-      out.shift();
-    }
-    return out;
   }
 } 

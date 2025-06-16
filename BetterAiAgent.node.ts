@@ -670,7 +670,15 @@ export class BetterAiAgent implements INodeType {
 				// Initialize memory adapter
 				let memoryAdapter: ChatArrayMemory | null = null;
 				if (connectedMemory) {
-					memoryAdapter = new ChatArrayMemory(connectedMemory);
+					let messageLimit: number | null = null;
+					try {
+						// BufferWindowMemory instances expose the window size via `k`.
+						if (typeof (connectedMemory as any).k === 'number') {
+							messageLimit = (connectedMemory as any).k;
+						}
+					} catch {}
+
+					memoryAdapter = new ChatArrayMemory(connectedMemory, messageLimit);
 				}
 
 				// Load previous messages (if any)
@@ -693,6 +701,14 @@ export class BetterAiAgent implements INodeType {
 
 				// Append current user input
 				messages.push({ role: 'user', content: input });
+
+				// If a message limit is defined on the memory adapter, ensure we do not exceed it
+				if (memoryAdapter && (memoryAdapter as any).maxMessages) {
+					const mm = (memoryAdapter as any).maxMessages as number;
+					if (mm > 0 && messages.length > mm) {
+						messages = messages.slice(-mm);
+					}
+				}
 
 				// Generate response with AI SDK - using the pattern from the example
 				// Note: temperature, maxTokens, etc. come from the connected model, not node parameters
