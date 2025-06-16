@@ -15,65 +15,65 @@ export class ChatArrayMemory {
   ) {}
 
   /**
-   * Load the stored chat array.  Performs legacy-format migration if needed.
+   * Load the stored chat array by concatenating every JSON array that was
+   * persisted on previous turns.  This keeps the database lean (one delta per
+   * turn) while still letting us reconstruct the full conversation for the
+   * next prompt.  We apply an optional `maxMessages` window **after**
+   * reconstruction so the caller controls how much context is sent to the
+   * model without losing older history in the DB.
    */
   async load(): Promise<CoreMessage[]> {
-    // 1) Trigger BufferMemory wrapper (and therefore n8n Postgres node logging)
+    // Trigger potential BufferMemory wrappers so n8n logs the access
     try {
       if (typeof this.memory.loadMemoryVariables === 'function') {
         await this.memory.loadMemoryVariables({ input: '__load__' });
       }
-    } catch (e) {
-      // non-fatal – continue with manual fetch
-    }
+    } catch {}
 
     if (!this.memory.chatHistory || !this.memory.chatHistory.getMessages) {
       return [];
     }
 
-    const msgs: StoredMessage[] = await this.memory.chatHistory.getMessages();
-    // Find last AIMessage whose content parses as array
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const m = msgs[i];
-      if ((m as any)._getType?.() === 'ai') {
-        const text = (m as any).content;
-        if (typeof text === 'string') {
-          try {
-            const parsed = JSON.parse(text);
-            if (Array.isArray(parsed)) {
-              const arr = parsed as CoreMessage[];
-              if (this.maxMessages !== null && this.maxMessages > 0 && arr.length > this.maxMessages) {
-                return arr.slice(-this.maxMessages);
-              }
-              return arr;
-            }
-          } catch {}
+    const allStored: StoredMessage[] = await this.memory.chatHistory.getMessages();
+
+    const combined: CoreMessage[] = [];
+    for (const msg of allStored) {
+      if ((msg as any)._getType?.() !== 'ai') continue;
+      const text = (msg as any).content;
+      if (typeof text !== 'string') continue;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          combined.push(...(parsed as CoreMessage[]));
         }
+      } catch {
+        // ignore parse errors – could be non-JSON messages
       }
     }
-    return [];
+
+    // Remove any leading orphan `tool` messages (edge case when windowing later)
+    while (combined.length > 0 && (combined[0] as any).role === 'tool') {
+      combined.shift();
+    }
+
+    // Apply runtime window if specified
+    if (this.maxMessages !== null && this.maxMessages > 0 && combined.length > this.maxMessages) {
+      return combined.slice(-this.maxMessages);
+    }
+
+    return combined;
   }
 
-  /** Save messages, performing optional trimming first */
+  /**
+   * Persist the messages produced in the *current* run (delta).  We expect the
+   * caller to pass **only** the new messages, so we just insert them as a JSON
+   * array.  Nothing is truncated – historical context remains intact in the DB.
+   */
   async save(messages: CoreMessage[]): Promise<void> {
-    let finalMessages: CoreMessage[] = messages;
-
-    // Respect message limit (if provided) by keeping only the most recent ones
-    if (this.maxMessages !== null && this.maxMessages > 0) {
-      finalMessages = messages.slice(-this.maxMessages);
-    }
-
-    // --- Sanitize conversation to avoid orphan `tool` messages ---------------
-    // If truncation cut off the preceding assistant/tool_calls pair, we might
-    // start the window with a lone `tool` message.  Simply drop *leading*
-    // `tool` messages until the first message is not a tool.
-
-    while (finalMessages.length > 0 && finalMessages[0].role === 'tool') {
-      finalMessages.shift();
-    }
+    if (!messages || messages.length === 0) return;
 
     if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
-      await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(finalMessages)));
+      await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(messages)));
     }
   }
 } 

@@ -781,9 +781,8 @@ export class BetterAiAgent implements INodeType {
 				if (memoryAdapter) {
 					try {
 						const newMessages: CoreMessage[] = convertResultToCoreMessages(result);
-						messages.push(...newMessages);
-						await memoryAdapter.save(messages);
-						console.log(`💾 Saved ${messages.length} messages (including new turn).`);
+						await memoryAdapter.save(newMessages);
+						console.log(`💾 Saved ${newMessages.length} messages (including new turn).`);
 					} catch (err) {
 						console.warn('❌ Failed to save conversation to memory:', err);
 					}
