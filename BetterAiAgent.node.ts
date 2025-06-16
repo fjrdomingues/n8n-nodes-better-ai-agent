@@ -28,6 +28,11 @@ import {
 } from './utils';
 import { ChatArrayMemory } from './utils/chatArrayMemory';
 import type { CoreMessage, ToolCallPart, ToolResultPart, TextPart } from 'ai';
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { LangfuseExporter } from 'langfuse-vercel';
+// @ts-ignore
+import { AISDKExporter } from 'langsmith/vercel';
 
 // Patch console.log once to respect global verbose flag
 if (!(globalThis as any).__BAA_LOG_PATCHED) {
@@ -38,6 +43,33 @@ if (!(globalThis as any).__BAA_LOG_PATCHED) {
 		}
 	};
 	(globalThis as any).__BAA_LOG_PATCHED = true;
+}
+
+// --- OpenTelemetry tracing (Langfuse) ---
+if (!(globalThis as any).__BAA_OTEL_INITIALIZED) {
+	try {
+		// Determine preferred trace exporter
+		let traceExporter: any;
+		let providerName = 'langfuse';
+		if (process.env.LANGSMITH_TRACING === 'true' || process.env.LANGSMITH_API_KEY) {
+			traceExporter = new AISDKExporter();
+			providerName = 'langsmith';
+		} else {
+			traceExporter = new LangfuseExporter();
+			providerName = 'langfuse';
+		}
+
+		const sdk = new NodeSDK({
+			traceExporter,
+			instrumentations: [getNodeAutoInstrumentations()],
+		});
+		sdk.start();
+		(globalThis as any).__BAA_OTEL_INITIALIZED = sdk;
+		(globalThis as any).__BAA_TRACE_PROVIDER = providerName;
+		console.log(`✅ OpenTelemetry SDK initialized with ${providerName} exporter`);
+	} catch (err) {
+		console.warn('❌ Failed to initialize OpenTelemetry SDK:', err);
+	}
 }
 
 // Generic helper: pull a numeric or string setting from multiple possible paths on the LangChain model
@@ -494,7 +526,7 @@ export class BetterAiAgent implements INodeType {
 		icon: 'fa:robot',
 		iconColor: 'black',
 		group: ['transform'],
-		version: 15,
+		version: 15.1,
 		description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format)',
 		defaults: {
 			name: 'Better AI Agent',
@@ -710,6 +742,23 @@ export class BetterAiAgent implements INodeType {
 					genArgs.tools = aiTools;
 				}
 				
+				// Enable OpenTelemetry tracing for this generation (Langfuse / LangSmith)
+				let telemetrySettings: any;
+				if ((globalThis as any).__BAA_TRACE_PROVIDER === 'langsmith') {
+					telemetrySettings = AISDKExporter.getSettings({
+						runId,
+						metadata: { n8nNodeName: this.getNode().name ?? 'BetterAiAgent' },
+					});
+				} else {
+					telemetrySettings = {
+						isEnabled: true,
+						functionId: runId,
+						metadata: { n8nNodeName: this.getNode().name ?? 'BetterAiAgent' },
+					};
+				}
+
+				genArgs.experimental_telemetry = telemetrySettings;
+				
 				const result = await generateText(genArgs);
 
 				// Convert result steps to ChatMessage objects & persist
@@ -744,6 +793,17 @@ export class BetterAiAgent implements INodeType {
 				}
 				throw error;
 			}
+		}
+
+		// After processing all items, flush OpenTelemetry spans so that traces are exported promptly (important for short-lived executions such as n8n worker tasks)
+		try {
+			const otelSdk: any = (globalThis as any).__BAA_OTEL_INITIALIZED;
+			if (otelSdk && typeof otelSdk.forceFlush === 'function') {
+				await otelSdk.forceFlush();
+				console.log('💾 OpenTelemetry spans flushed');
+			}
+		} catch (err) {
+			console.warn('❌ Failed to flush OpenTelemetry spans:', err);
 		}
 
 		return [returnData];
