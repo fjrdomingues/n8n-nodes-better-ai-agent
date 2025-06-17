@@ -692,13 +692,6 @@ export class BetterAiAgent implements INodeType {
 					}
 				}
 
-				// Add system message if provided and not already present at top
-				if (options.systemMessage) {
-					if (!messages.length || messages[0].role !== 'system') {
-						messages.unshift({ role: 'system', content: options.systemMessage });
-					}
-				}
-
 				// Append current user input
 				messages.push({ role: 'user', content: input });
 
@@ -717,6 +710,8 @@ export class BetterAiAgent implements INodeType {
 					model: aiModel,
 					maxSteps: options.maxSteps || 5,
 					messages: messages as Array<CoreMessage>,
+					// Provide the system prompt directly to the AI SDK when present
+					...(options.systemMessage ? { system: options.systemMessage } : {}),
 					onStepFinish: ({ text, toolCalls, toolResults }: any) => {
 						postIntermediate({
 							version: 1,
