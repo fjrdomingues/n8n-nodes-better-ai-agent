@@ -51,17 +51,18 @@ export class ChatArrayMemory {
       }
     }
 
-    // Remove any leading orphan `tool` messages (edge case when windowing later)
-    while (combined.length > 0 && (combined[0] as any).role === 'tool') {
-      combined.shift();
-    }
-
     // Apply runtime window if specified
+    let windowed = combined;
     if (this.maxMessages !== null && this.maxMessages > 0 && combined.length > this.maxMessages) {
-      return combined.slice(-this.maxMessages);
+      windowed = combined.slice(-this.maxMessages);
     }
 
-    return combined;
+    // Remove any leading orphan `tool` messages (can appear after windowing)
+    while (windowed.length > 0 && (windowed[0] as any).role === 'tool') {
+      windowed.shift();
+    }
+
+    return windowed;
   }
 
   /**
