@@ -209,8 +209,7 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 	}
 	
 	// Default fallback to OpenAI with a sensible model
-	console.warn(`Unknown model type: ${n8nModel.constructor?.name}, defaulting to OpenAI`);
-	return openai('gpt-4o-mini');
+	throw new Error(`Unsupported or unknown model type: ${n8nModel.constructor?.name}. Please connect a supported language model node or update convertN8nModelToAiSdk to handle this model.`);
 }
 
 // Recursively flatten arrays or containers that expose a .tools array (e.g., McpToolkit)
@@ -296,104 +295,7 @@ function convertN8nToolsToAiSdk(n8nTools: any[]): Record<string, any> {
 	return tools;
 }
 
-// Helper function to save conversation to memory using proper OpenAI message format
-async function saveToMemory(memory: any, userInput: string, result: any): Promise<void> {
-	if (!memory || !memory.saveContext) return;
-
-	try {
-		console.log('=== SAVING TO MEMORY (OpenAI Format) ===');
-		console.log('User input:', userInput);
-		console.log('Result steps:', result.steps?.length || 0);
-		console.log('Result text:', result.text);
-
-		// Build proper OpenAI message format
-		const messages: any[] = [];
-
-		// Add user message
-		messages.push({
-			role: 'user',
-			content: userInput
-		});
-
-		// Process each step to build proper message sequence
-		if (result.steps && result.steps.length > 0) {
-			for (let i = 0; i < result.steps.length; i++) {
-				const step = result.steps[i];
-				console.log(`Step ${i + 1}:`, {
-					text: step.text,
-					toolCalls: step.toolCalls?.length || 0,
-					toolResults: step.toolResults?.length || 0
-				});
-
-				// Add assistant message with tool calls (if any)
-				if (step.toolCalls && step.toolCalls.length > 0) {
-					const assistantMessage: any = {
-						role: 'assistant',
-						content: step.text || null,
-						tool_calls: step.toolCalls.map((toolCall: any) => ({
-							id: toolCall.toolCallId || `call_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-							type: 'function',
-							function: {
-								name: toolCall.toolName,
-								arguments: JSON.stringify(toolCall.args)
-							}
-						}))
-					};
-					messages.push(assistantMessage);
-
-					// Add tool result messages
-					if (step.toolResults && step.toolResults.length > 0) {
-						for (const toolResult of step.toolResults) {
-							messages.push({
-								role: 'tool',
-								tool_call_id: assistantMessage.tool_calls.find((tc: any) => 
-									tc.function.name === toolResult.toolName
-								)?.id || `call_${Date.now()}`,
-								content: typeof toolResult.result === 'string' 
-									? toolResult.result 
-									: JSON.stringify(toolResult.result)
-							});
-							console.log('Tool result message:', toolResult.toolName, toolResult.result);
-						}
-					}
-				} else if (step.text && step.text.trim()) {
-					// Add regular assistant message without tool calls
-					messages.push({
-						role: 'assistant',
-						content: step.text
-					});
-				}
-			}
-		} else if (result.text && result.text.trim()) {
-			// Add final assistant message if no steps
-			messages.push({
-				role: 'assistant',
-				content: result.text
-			});
-		}
-
-		// Save the message sequence to memory
-		// Use a special format to preserve the OpenAI message structure
-		const conversationData = {
-			format: 'openai_messages',
-			messages: messages,
-			timestamp: Date.now()
-		};
-
-		await memory.saveContext(
-			{ input: userInput },
-			{ output: JSON.stringify(conversationData) }
-		);
-		
-		console.log('✅ Successfully saved conversation in OpenAI format');
-		console.log('Total messages saved:', messages.length);
-		console.log('Message types:', messages.map(m => m.role).join(', '));
-	} catch (error) {
-		console.warn('❌ Failed to save conversation to memory:', error);
-	}
-}
-
-// Function to define the inputs based on n8n AI ecosystem
+// Helper function to define the inputs based on n8n AI ecosystem
 function getInputs(): Array<NodeConnectionType | INodeInputConfiguration> {
 	interface SpecialInput {
 		type: NodeConnectionType;
@@ -465,58 +367,6 @@ function getInputs(): Array<NodeConnectionType | INodeInputConfiguration> {
 	];
 
 	return ['main', ...getInputData(specialInputs)];
-}
-
-/** Helper: convert ai-sdk result to OpenAI-style messages */
-function convertResultToCoreMessages(result: any): CoreMessage[] {
-	const out: CoreMessage[] = [];
-
-	if (Array.isArray(result.steps) && result.steps.length > 0) {
-		for (const step of result.steps) {
-			const { text, toolCalls = [], toolResults = [] } = step;
-
-			// ----- assistant message -----
-			if (text || toolCalls.length > 0) {
-				const parts: Array<TextPart | ToolCallPart> = [];
-				if (text && text.trim()) {
-					parts.push({ type: 'text', text });
-				}
-				for (const tc of toolCalls) {
-					parts.push({
-						type: 'tool-call',
-						toolCallId: tc.toolCallId || tc.id || `call_${Date.now()}`,
-						toolName: tc.toolName,
-						args: tc.args ?? {},
-					});
-				}
-
-				const assistantMsg: CoreMessage = {
-					role: 'assistant',
-					content: parts.length === 1 && parts[0].type === 'text' ? text : parts,
-				} as CoreMessage;
-				out.push(assistantMsg);
-			}
-
-			// ----- tool result message -----
-			if (toolResults.length > 0) {
-				const resultParts: ToolResultPart[] = toolResults.map((tr: any) => ({
-					type: 'tool-result',
-					toolCallId: tr.toolCallId || tr.id || tr.tool_call_id || 'unknown',
-					toolName: tr.toolName,
-					result: tr.result,
-				}));
-
-				out.push({
-					role: 'tool',
-					content: resultParts,
-				} as CoreMessage);
-			}
-		}
-	} else if (result.text) {
-		out.push({ role: 'assistant', content: result.text } as CoreMessage);
-	}
-
-	return out;
 }
 
 export class BetterAiAgent implements INodeType {
@@ -712,14 +562,13 @@ export class BetterAiAgent implements INodeType {
 					messages: messages as Array<CoreMessage>,
 					// Provide the system prompt directly to the AI SDK when present
 					...(options.systemMessage ? { system: options.systemMessage } : {}),
-					onStepFinish: ({ text, toolCalls, toolResults }: any) => {
+					onStepFinish: ({ text, toolCalls }: any) => {
 						postIntermediate({
 							version: 1,
 							runId,
 							step: stepCount,
 							text,
 							toolCalls,
-							toolResults,
 							done: false,
 						});
 						stepCount += 1;
@@ -775,13 +624,73 @@ export class BetterAiAgent implements INodeType {
 				// Convert result steps to ChatMessage objects & persist
 				if (memoryAdapter) {
 					try {
-						const newMessages: CoreMessage[] = convertResultToCoreMessages(result);
-						const deltaMessages: CoreMessage[] = [
-							{ role: 'user', content: input },
-							...newMessages,
-						];
-						await memoryAdapter.save(deltaMessages);
-						console.log(`💾 Saved ${deltaMessages.length} messages (including new turn).`);
+						// Reconstruct the full exchange to be saved
+						const messagesToSave: CoreMessage[] = [{ role: 'user', content: input }];
+						
+						// Aggregate toolCalls and toolResults (SDK may expose them only inside steps)
+						const aggregatedToolCalls = (
+							(result.toolCalls && result.toolCalls.length > 0 ? result.toolCalls : []) as any[]
+						).concat(
+							(result.steps || [])
+								.flatMap((s: any) => (s.toolCalls ? s.toolCalls : []))
+						);
+
+						const aggregatedToolResults = (
+							(result.toolResults && result.toolResults.length > 0 ? result.toolResults : []) as any[]
+						).concat(
+							(result.steps || [])
+								.flatMap((s: any) => (s.toolResults ? s.toolResults : []))
+						);
+
+						// If there were tool calls, save them as separate assistant message
+						if (aggregatedToolCalls.length > 0) {
+							messagesToSave.push({
+								role: 'assistant',
+								content: aggregatedToolCalls.map((toolCall) => ({
+									type: 'tool-call',
+									toolCallId: toolCall.toolCallId || toolCall.id || toolCall.callId,
+									toolName: toolCall.toolName || toolCall.name,
+									args: toolCall.args || toolCall.arguments || toolCall.params,
+								})),
+							});
+						}
+
+						// If there were tool results, save them
+						if (aggregatedToolResults.length > 0) {
+							messagesToSave.push({
+								role: 'tool',
+								content: aggregatedToolResults.map((toolResult: any) => {
+									// Build tool-result part
+									const normalize = (): any => {
+										const raw = toolResult.result ?? toolResult.data ?? toolResult.output ?? '';
+										if (typeof raw === 'string') {
+											const trimmed = raw.trim();
+											if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+												try {
+													return JSON.parse(trimmed);
+												} catch {}
+											}
+										}
+										return raw;
+									};
+
+									return {
+										type: 'tool-result',
+										toolCallId: toolResult.toolCallId || toolResult.id || toolResult.callId,
+										toolName: toolResult.toolName || toolResult.name,
+										result: normalize(),
+									};
+								}),
+							});
+						}
+
+						// If there's a final text response, save it as separate assistant message
+						if (result.text) {
+							messagesToSave.push({ role: 'assistant', content: result.text });
+						}
+
+						await memoryAdapter.save(messagesToSave);
+						console.log(`💾 Saved ${messagesToSave.length} messages (including new turn).`);
 					} catch (err) {
 						console.warn('❌ Failed to save conversation to memory:', err);
 					}

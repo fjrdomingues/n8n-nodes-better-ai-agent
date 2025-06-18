@@ -58,8 +58,22 @@ export class ChatArrayMemory {
     }
 
     // Remove any leading orphan `tool` messages (can appear after windowing)
-    while (windowed.length > 0 && (windowed[0] as any).role === 'tool') {
-      windowed.shift();
+    // Only remove tool messages at the start that don't have corresponding assistant tool-call messages
+    while (windowed.length > 0 && windowed[0].role === 'tool') {
+      // Check if there's a preceding assistant message with tool calls
+      let hasCorrespondingToolCall = false;
+      if (windowed.length > 1) {
+        const prevMsg = windowed[1];
+        if (prevMsg.role === 'assistant' && Array.isArray(prevMsg.content)) {
+          hasCorrespondingToolCall = (prevMsg.content as any[]).some(p => p.type === 'tool-call');
+        }
+      }
+      
+      if (!hasCorrespondingToolCall) {
+        windowed.shift();
+      } else {
+        break;
+      }
     }
 
     return windowed;
