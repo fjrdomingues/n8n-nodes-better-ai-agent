@@ -57,26 +57,34 @@ export class ChatArrayMemory {
       windowed = combined.slice(-this.maxMessages);
     }
 
-    // Remove any leading orphan `tool` messages (can appear after windowing)
-    // Only remove tool messages at the start that don't have corresponding assistant tool-call messages
-    while (windowed.length > 0 && windowed[0].role === 'tool') {
-      // Check if there's a preceding assistant message with tool calls
-      let hasCorrespondingToolCall = false;
-      if (windowed.length > 1) {
-        const prevMsg = windowed[1];
-        if (prevMsg.role === 'assistant' && Array.isArray(prevMsg.content)) {
-          hasCorrespondingToolCall = (prevMsg.content as any[]).some(p => p.type === 'tool-call');
+    // Remove problematic messages at the very start of the window – those are the
+    // only ones that can become "orphaned" when we cut off history.
+    let startIndex = 0;
+    while (startIndex < windowed.length) {
+      const msg = windowed[startIndex];
+
+      // 1. Orphan tool result (first message is `tool` with no preceding assistant)
+      if (msg.role === 'tool') {
+        if ((globalThis as any).__BAA_VERBOSE) console.log('⚠️ Dropping leading orphan tool message');
+        startIndex += 1;
+        continue;
+      }
+
+      // 2. Assistant message that *only* contains tool-calls with no following tool
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        const hasToolCalls = (msg.content as any[]).some(p => p.type === 'tool-call');
+        if (hasToolCalls) {
+          if ((globalThis as any).__BAA_VERBOSE) console.log('⚠️ Dropping leading assistant message with tool-call but no response');
+          startIndex += 1;
+          continue;
         }
       }
-      
-      if (!hasCorrespondingToolCall) {
-        windowed.shift();
-      } else {
-        break;
-      }
+
+      // First message is safe – stop trimming
+      break;
     }
 
-    return windowed;
+    return windowed.slice(startIndex);
   }
 
   /**
@@ -91,4 +99,4 @@ export class ChatArrayMemory {
       await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(messages)));
     }
   }
-} 
+}
