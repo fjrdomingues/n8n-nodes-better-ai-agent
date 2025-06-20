@@ -619,7 +619,75 @@ export class BetterAiAgent implements INodeType {
 
 				genArgs.experimental_telemetry = telemetrySettings;
 				
-				const result = await generateText(genArgs);
+				// Wrap generation call in a retry loop so that the agent can recover from
+				// tool argument validation errors (e.g. AI_TypeValidationError) by feeding the
+				// error back as a tool result. This allows the language model to attempt to
+				// re-issue the tool-call with corrected parameters instead of aborting the
+				// entire node execution.
+
+				let result: any = null;
+				const maxRetries = Math.max(1, (options.maxSteps || 5));
+				let retryCount = 0;
+
+				// We reuse the same genArgs object but update the messages array in-place on
+				// every retry so that additional tool-result error messages are available to
+				// the model.
+				while (retryCount < maxRetries) {
+					try {
+						// Always reference the latest messages array
+						genArgs.messages = messages as Array<CoreMessage>;
+						result = await generateText(genArgs);
+						break; // success, exit retry loop
+					} catch (err: any) {
+						// Detect AI SDK validation or execution errors on tool calls. Those
+						// expose the name "AI_TypeValidationError" (for schema issues) or may
+						// simply bubble up from the tool execution. In these cases we build a
+						// synthetic tool-result message that contains the error so the model can
+						// try again.
+
+						const errName = err?.name || '';
+						const isToolError = errName.startsWith('AI_') || err.cause?.name === 'ZodError';
+
+						if (!isToolError || retryCount >= maxRetries - 1) {
+							// Not a tool error we can recover from OR we exhausted retries –
+							// rethrow so that n8n's retry mechanism can take over (if enabled)
+							throw err;
+						}
+
+						console.warn(`⚠️  Tool call failed (attempt ${retryCount + 1}/${maxRetries}):`, err);
+
+						// Post an intermediate update so a webhook (if configured) is aware of
+						// the failure and retry.
+						postIntermediate({
+							version: 1,
+							runId,
+							step: stepCount,
+							error: (err as Error).message,
+							done: false,
+							retry: retryCount + 1,
+						});
+
+						// Add a tool-result message describing the error so the LLM can decide
+						// how to fix the arguments.
+						messages.push({
+							role: 'tool',
+							content: [
+								{
+									type: 'tool-result',
+									toolCallId: `error-${retryCount + 1}`,
+									result: (err as Error).message || String(err),
+								},
+							],
+						} as any);
+
+						retryCount += 1;
+						continue; // try again with updated context
+					}
+				}
+
+				if (!result) {
+					throw new Error('Failed to generate a valid response after retries.');
+				}
 
 				// Convert result steps to ChatMessage objects & persist
 				if (memoryAdapter) {
