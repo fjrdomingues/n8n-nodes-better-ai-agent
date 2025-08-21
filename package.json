@@ -1,11 +1,10 @@
 {
   "name": "n8n-nodes-better-ai-agent",
-  "version": "1.6.7",
+  "version": "1.6.9",
   "description": "A better AI Agent node for n8n with improved memory management and modern AI SDK integration",
   "main": "dist/BetterAiAgent.node.js",
   "scripts": {
-    "build": "rimraf dist && tsc && npm run copy-dependencies",
-    "copy-dependencies": "copyfiles -u 1 nodes/**/*.json dist/",
+    "build": "rimraf dist && tsc",
     "dev": "tsc --watch",
     "package": "npm run build && npm pack",
     "deploy-local": "npm run build && cp package.json ~/.n8n/custom/ && cp -R dist/* ~/.n8n/custom/ && npm install --omit=dev --prefix ~/.n8n/custom"
@@ -31,13 +30,13 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@ai-sdk/anthropic": "^0.0.54",
-    "@ai-sdk/google": "^1.2.19",
-    "@ai-sdk/openai": "^0.0.66",
+    "@ai-sdk/anthropic": "^1.0.2",
+    "@ai-sdk/google": "^1.0.2",
+    "@ai-sdk/openai": "^1.0.5",
     "@langchain/core": "0.1.18",
     "@opentelemetry/auto-instrumentations-node": "^0.60.1",
     "@opentelemetry/sdk-node": "^0.202.0",
-    "ai": "^3.4.9",
+    "ai": "^4.0.8",
     "langfuse-vercel": "^3.37.4",
     "langsmith": "^0.3.31",
     "n8n-workflow": ">=1.94.0",

@@ -5,7 +5,7 @@ An improved AI Agent node for n8n that provides better memory management, modern
 ## Features
 
 - **Conversation Memory that includes Tools** – every user message, tool call and tool result is stored.
-- **Modern AI SDK Providers** – wraps OpenAI, Gemini and Anthropic through Vercel AI SDK.
+- **Modern AI SDK Providers** – wraps OpenAI (including GPT-5), Gemini and Anthropic through stable Vercel AI SDK v4.
 - **Live Streaming Updates**: Intermediate Webhook URL lets you push each agent step in real-time
 
 ## Installation

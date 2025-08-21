@@ -2,6 +2,25 @@ import type { CoreMessage } from 'ai';
 import { AIMessage } from '@langchain/core/messages';
 type StoredMessage = { content: string; _getType?: () => string };
 
+// Message validation (duplicated from main file to avoid circular imports)
+function validateCoreMessage(msg: any): msg is CoreMessage {
+	if (!msg || typeof msg !== 'object') return false;
+	if (!msg.role || typeof msg.role !== 'string') return false;
+	if (!['user', 'assistant', 'tool', 'system'].includes(msg.role)) return false;
+	
+	// Content validation based on role
+	if (msg.role === 'user' || msg.role === 'system') {
+		return typeof msg.content === 'string';
+	} else if (msg.role === 'assistant') {
+		return typeof msg.content === 'string' || Array.isArray(msg.content);
+	} else if (msg.role === 'tool') {
+		return Array.isArray(msg.content) && msg.content.every((part: any) => 
+			part && typeof part === 'object' && part.type === 'tool-result'
+		);
+	}
+	return false;
+}
+
 export class ChatArrayMemory {
   constructor(
     private readonly memory: any, // BufferMemory or BufferWindowMemory
@@ -44,10 +63,15 @@ export class ChatArrayMemory {
       try {
         const parsed = JSON.parse(text);
         if (Array.isArray(parsed)) {
-          combined.push(...(parsed as CoreMessage[]));
+          // Validate each message before adding to prevent corruption
+          const validMessages = parsed.filter(validateCoreMessage);
+          if (validMessages.length < parsed.length) {
+            console.warn(`⚠️ Filtered out ${parsed.length - validMessages.length} invalid messages from memory`);
+          }
+          combined.push(...validMessages);
         }
       } catch {
-        // ignore parse errors – could be non-JSON messages
+        console.warn('⚠️ Skipping corrupted message in memory (invalid JSON)');
       }
     }
 
@@ -95,8 +119,19 @@ export class ChatArrayMemory {
   async save(messages: CoreMessage[]): Promise<void> {
     if (!messages || messages.length === 0) return;
 
+    // Validate all messages before saving to prevent memory corruption
+    const validMessages = messages.filter(validateCoreMessage);
+    if (validMessages.length === 0) {
+      console.warn('⚠️ No valid messages to save to memory');
+      return;
+    }
+    
+    if (validMessages.length < messages.length) {
+      console.warn(`⚠️ Filtered out ${messages.length - validMessages.length} invalid messages before saving to memory`);
+    }
+
     if (this.memory.chatHistory && this.memory.chatHistory.addMessage) {
-      await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(messages)));
+      await this.memory.chatHistory.addMessage(new AIMessage(JSON.stringify(validMessages)));
     }
   }
 }
