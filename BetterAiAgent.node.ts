@@ -10,7 +10,7 @@ import {
 	NodeConnectionTypes,
 } from 'n8n-workflow';
 
-import { generateText, tool } from 'ai';
+import { generateText, tool, jsonSchema } from 'ai';
 import { openai, createOpenAI } from '@ai-sdk/openai';
 import { anthropic, createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -21,13 +21,12 @@ import {
 	getConnectedTools,
 	getConnectedMemory,
 	getConnectedModel,
-	getConnectedOutputParser,
 	promptTypeOptions,
 	textInput,
 	textFromPreviousNode,
 } from './utils';
 import { ChatArrayMemory } from './utils/chatArrayMemory';
-import type { CoreMessage, ToolCallPart, ToolResultPart, TextPart } from 'ai';
+import type { CoreMessage } from 'ai';
 
 // Message validation helper
 function validateCoreMessage(msg: any): msg is CoreMessage {
@@ -265,45 +264,65 @@ function* flattenTools(toolOrArray: any): Iterable<any> {
 function convertN8nToolsToAiSdk(n8nTools: any[]): Record<string, any> {
 	const tools: Record<string, any> = {};
 	
+	console.log('BetterAiAgent v1.6.13: Converting n8n tools to AI SDK format');
+	
 	const flatTools = Array.from(flattenTools(n8nTools));
-	console.log('Converting n8n tools to AI SDK format:');
-	console.log('Number of tools after flatten:', flatTools.length);
+	console.log(`Processing ${flatTools.length} tools`);
 	
 	for (const n8nTool of flatTools) {
-		console.log('n8n Tool:', {
-			name: n8nTool?.name,
-			description: n8nTool?.description,
-			schema: n8nTool?.schema,
-			keys: Object.keys(n8nTool || {})
-		});
 		
 		if (n8nTool && n8nTool.name) {
-			// Create a more robust schema - handle ZodEffects
-			let toolSchema;
+			// Create a more robust schema - handle ZodEffects and sanitize for AI SDK
+			const isZod = (s: any) => !!s && typeof s === 'object' && (
+				(typeof s.parse === 'function' && s._def && typeof s._def === 'object') ||
+				(s['~standard'] && s['~standard'].vendor === 'zod')
+			);
+			const unwrapZodEffects = (s: any) => (s && s._def && s._def.schema) ? s._def.schema : s;
+			
+			let toolSchema: any;
 			try {
 				if (n8nTool.schema) {
-					// Check if it's a ZodEffects and extract the underlying schema
-					if (n8nTool.schema._def && n8nTool.schema._def.schema) {
-						console.log('Extracting schema from ZodEffects');
-						toolSchema = n8nTool.schema._def.schema;
+					let base = unwrapZodEffects(n8nTool.schema);
+					
+					if (isZod(base)) {
+						// Check if this is a problematic MCP tool with catchall
+						const hasCatchall = base._def?.catchall;
+						if (hasCatchall) {
+							console.log(`Tool ${n8nTool.name}: Reconstructing schema without catchall`);
+							// Extract the shape from the original schema and create a new one without catchall
+							try {
+								const shape = base._def.shape();
+								toolSchema = z.object(shape).strict();
+							} catch (shapeError) {
+								console.warn(`Tool ${n8nTool.name}: Could not extract shape, using original`);
+								toolSchema = base;
+							}
+						} else {
+							// For Zod schemas without catchall, let the AI SDK handle them directly
+							toolSchema = base;
+						}
+					} else if (typeof base === 'object' && base.type) {
+						// This looks like a JSON schema already
+						// Use jsonSchema helper from AI SDK to ensure compatibility
+						try {
+							toolSchema = jsonSchema(base);
+						} catch (jsonErr) {
+							console.warn(`Tool ${n8nTool.name}: jsonSchema conversion failed, using fallback`);
+							toolSchema = z.record(z.unknown());
+						}
 					} else {
-						toolSchema = n8nTool.schema;
+						// Unknown schema type - use a permissive schema
+						toolSchema = z.record(z.unknown());
 					}
 				} else {
-					// Default schema if none provided
-					toolSchema = z.object({
-						input: z.string().describe('Tool input'),
-					});
+					// Default schema if none provided - use permissive schema
+					toolSchema = z.record(z.unknown());
 				}
-				
-				console.log('Final tool schema:', toolSchema);
 			} catch (error) {
-				console.warn(`Invalid schema for tool ${n8nTool.name}, using default:`, error);
-				toolSchema = z.object({
-					input: z.string().describe('Tool input'),
-				});
+				console.warn(`Tool ${n8nTool.name}: Schema error, using fallback:`, error);
+				toolSchema = z.record(z.unknown());
 			}
-			
+
 			tools[n8nTool.name] = tool({
 				description: n8nTool.description || `Execute ${n8nTool.name}`,
 				parameters: toolSchema,
@@ -320,7 +339,7 @@ function convertN8nToolsToAiSdk(n8nTools: any[]): Record<string, any> {
 					}
 				},
 			});
-			
+
 			console.log(`Successfully converted tool: ${n8nTool.name}`);
 		} else {
 			console.warn('Skipping invalid tool:', n8nTool);
@@ -501,7 +520,6 @@ export class BetterAiAgent implements INodeType {
 		const connectedModel = await getConnectedModel(this);
 		const connectedMemory = await getConnectedMemory(this);
 		const connectedTools = await getConnectedTools(this);
-		const connectedOutputParser = await getConnectedOutputParser(this);
 
 		if (!connectedModel) {
 			throw new NodeOperationError(this.getNode(), 'No language model connected');
