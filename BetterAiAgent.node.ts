@@ -208,7 +208,19 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 
 		console.log('Using createGoogleGenerativeAI with explicit API key');
 		const geminiProvider = createGoogleGenerativeAI({ apiKey, ...settings });
-		const modelName = n8nModel.modelName || 'gemini-pro';
+		
+		// Enhanced model name extraction with multiple fallbacks
+		const modelName = n8nModel.modelName || 
+						  n8nModel.model || 
+						  n8nModel._model ||
+						  (n8nModel.kwargs && n8nModel.kwargs.model) ||
+						  (n8nModel.lc_kwargs && n8nModel.lc_kwargs.model) ||
+						  (n8nModel.options && n8nModel.options.model) ||
+						  (n8nModel.clientOptions && n8nModel.clientOptions.model) ||
+						  (n8nModel.configuration && n8nModel.configuration.model) ||
+						  'gemini-2.5-flash'; // Updated default to current model
+		
+		console.log('Using Gemini model:', modelName);
 		return geminiProvider(modelName);
 	}
 	
