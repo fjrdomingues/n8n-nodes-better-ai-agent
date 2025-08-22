@@ -128,11 +128,23 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 	console.log('n8n Model properties:', Object.keys(n8nModel));
 	
 	// Extract model information from the LangChain model
-	const modelName = n8nModel.modelName || n8nModel.model || 'gpt-4o-mini';
+	let modelName = n8nModel.modelName || n8nModel.model || 'gpt-4o-mini';
 	
-	// Check if it's an OpenAI-compatible model (OpenAI, Azure OpenAI, etc.)
+	// Enhanced model name extraction for various providers
+	if (!modelName || modelName === 'gpt-4o-mini') {
+		// Try additional properties that might contain the model name
+		modelName = n8nModel._model ||
+					(n8nModel.kwargs && n8nModel.kwargs.model) ||
+					(n8nModel.lc_kwargs && n8nModel.lc_kwargs.model) ||
+					(n8nModel.options && n8nModel.options.model) ||
+					(n8nModel.configuration && n8nModel.configuration.model) ||
+					'gpt-4o-mini';
+	}
+	
+	// Check if it's an OpenAI-compatible model (OpenAI, Azure OpenAI, OpenRouter, etc.)
 	if (n8nModel.constructor?.name?.includes('ChatOpenAI') || 
-		n8nModel.constructor?.name?.includes('OpenAI')) {
+		n8nModel.constructor?.name?.includes('OpenAI') ||
+		n8nModel.constructor?.name?.includes('OpenRouter')) {
 		
 		// Settings that should be sent with the model invocation (generation parameters)
 		const modelSettings: any = {};
@@ -159,29 +171,54 @@ function convertN8nModelToAiSdk(n8nModel: any): any {
 		if (reasoningEffort !== undefined) modelSettings.reasoningEffort = reasoningEffort;
 		
 		// Extract API key from the LangChain model
-		const apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
-		console.log('OpenAI API Key found:', apiKey ? 'YES (length: ' + apiKey.length + ')' : 'NO');
+		let apiKey = n8nModel.openAIApiKey || n8nModel.apiKey;
 		
 		// Try to get API key from clientConfig if not found directly
-		let finalApiKey = apiKey;
-		if (!finalApiKey && n8nModel.clientConfig) {
-			const clientApiKey = n8nModel.clientConfig.apiKey || n8nModel.clientConfig.openAIApiKey;
-			console.log('Client config API key:', clientApiKey ? 'YES (length: ' + clientApiKey.length + ')' : 'NO');
-			if (clientApiKey) {
-				finalApiKey = clientApiKey;
-			}
+		if (!apiKey && n8nModel.clientConfig) {
+			apiKey = n8nModel.clientConfig.apiKey || n8nModel.clientConfig.openAIApiKey;
 		}
 		
-		// Extract base URL if it exists (for Azure OpenAI, etc.)
-		if (n8nModel.configuration?.baseURL) {
-			providerSettings.baseURL = n8nModel.configuration.baseURL;
+		// Try additional locations for API key
+		if (!apiKey) {
+			apiKey = (n8nModel.kwargs && n8nModel.kwargs.apiKey) ||
+					 (n8nModel.lc_kwargs && n8nModel.lc_kwargs.apiKey) ||
+					 (n8nModel.configuration && n8nModel.configuration.apiKey);
+		}
+		
+		console.log('API Key found:', apiKey ? 'YES (length: ' + apiKey.length + ', prefix: ' + apiKey.substring(0, 8) + ')' : 'NO');
+		
+		// Extract base URL from various possible locations
+		let baseURL = n8nModel.configuration?.baseURL || 
+					  n8nModel.baseURL ||
+					  (n8nModel.clientConfig && n8nModel.clientConfig.baseURL) ||
+					  (n8nModel.kwargs && n8nModel.kwargs.baseURL) ||
+					  (n8nModel.lc_kwargs && n8nModel.lc_kwargs.baseURL);
+		
+		if (baseURL) {
+			providerSettings.baseURL = baseURL;
+		}
+		
+		// Special handling for OpenRouter
+		const isOpenRouter = n8nModel.constructor?.name?.includes('OpenRouter') || 
+							 baseURL?.includes('openrouter.ai') ||
+							 apiKey?.startsWith('sk-or-');
+		
+		if (isOpenRouter) {
+			// OpenRouter uses https://openrouter.ai/api/v1 as base URL
+			if (!baseURL || !baseURL.includes('openrouter.ai')) {
+				providerSettings.baseURL = 'https://openrouter.ai/api/v1';
+				baseURL = providerSettings.baseURL;
+			}
+			console.log(`🔗 Using OpenRouter provider with model: ${modelName}`);
+			console.log(`🔗 OpenRouter base URL: ${baseURL}`);
+			console.log(`🔗 OpenRouter API key prefix: ${apiKey ? apiKey.substring(0, 8) + '...' : 'NOT FOUND'}`);
 		}
 		
 		// Use createOpenAI with explicit API key instead of openai()
-		if (finalApiKey) {
+		if (apiKey) {
 			console.log('Using createOpenAI with explicit API key');
 			const openaiProvider = createOpenAI({
-				apiKey: finalApiKey,
+				apiKey: apiKey,
 				...providerSettings,
 			});
 			return openaiProvider(modelName, modelSettings);
