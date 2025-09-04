@@ -117,3 +117,15 @@ export const textFromPreviousNode = {
 		show: { promptType: ['auto'] },
 	},
 }; 
+
+export const toolDescription = {
+	displayName: 'Description',
+	name: 'description',
+	type: 'string' as const,
+	default: 'AI Agent that can call other tools',
+	placeholder: 'Describe what this tool does...',
+	description: 'Description of what this tool does when called by other agents',
+	typeOptions: {
+		rows: 3,
+	},
+};

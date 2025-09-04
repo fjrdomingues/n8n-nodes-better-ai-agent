@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-better-ai-agent",
-  "version": "1.6.16",
+  "version": "1.7.0",
   "description": "A better AI Agent node for n8n with improved memory management and modern AI SDK integration",
   "main": "dist/BetterAiAgent.node.js",
   "scripts": {
@@ -15,7 +15,8 @@
   "n8n": {
     "n8nNodesApiVersion": 1,
     "nodes": [
-      "dist/BetterAiAgent.node.js"
+      "dist/BetterAiAgent.node.js",
+      "dist/BetterAiAgentTool.node.js"
     ]
   },
   "keywords": [
