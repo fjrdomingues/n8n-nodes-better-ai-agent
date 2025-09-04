@@ -8,6 +8,7 @@ import {
 	NodeOperationError,
 	NodeConnectionType,
 	NodeConnectionTypes,
+	ISupplyDataFunctions,
 } from 'n8n-workflow';
 
 import { generateText, tool, jsonSchema } from 'ai';
@@ -17,13 +18,10 @@ import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 
 import {
-	getPromptInputByType,
 	getConnectedTools,
 	getConnectedMemory,
 	getConnectedModel,
-	promptTypeOptions,
-	textInput,
-	textFromPreviousNode,
+	toolDescription,
 } from './utils';
 import { ChatArrayMemory } from './utils/chatArrayMemory';
 import type { CoreMessage } from 'ai';
@@ -63,6 +61,7 @@ function validateMessagesArray(messages: any[]): CoreMessage[] {
 	
 	return validMessages;
 }
+
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { LangfuseExporter } from 'langfuse-vercel';
@@ -313,7 +312,7 @@ function* flattenTools(toolOrArray: any): Iterable<any> {
 function convertN8nToolsToAiSdk(n8nTools: any[]): Record<string, any> {
 	const tools: Record<string, any> = {};
 	
-	console.log('BetterAiAgentTool v1.7.0: Converting n8n tools to AI SDK format');
+	console.log('BetterAiAgentTool: Converting n8n tools to AI SDK format');
 	
 	const flatTools = Array.from(flattenTools(n8nTools));
 	console.log(`Processing ${flatTools.length} tools`);
@@ -470,7 +469,7 @@ function getInputs(): Array<NodeConnectionType | INodeInputConfiguration> {
 		},
 	];
 
-	return ['main', ...getInputData(specialInputs)];
+	return getInputData(specialInputs);
 }
 
 export class BetterAiAgentTool implements INodeType {
@@ -481,7 +480,7 @@ export class BetterAiAgentTool implements INodeType {
 		iconColor: 'black',
 		group: ['transform'],
 		version: 1,
-		description: 'Advanced AI Agent with improved memory management and modern AI SDK (OpenAI Message Format) - usable as Tool',
+		description: 'Advanced AI Agent with improved memory management and modern AI SDK - usable as Tool',
 		defaults: {
 			name: 'Better AI Agent Tool',
 			color: '#1f77b4',
@@ -491,25 +490,13 @@ export class BetterAiAgentTool implements INodeType {
 		outputs: [NodeConnectionTypes.AiTool],
 		properties: [
 			{
-				displayName: 'Tip: This node uses modern AI SDK with proper tool call memory management and can be used as a Tool',
+				displayName: 'Tip: This node can be used as a Tool by other AI agents',
 				name: 'notice_tip',
 				type: 'notice',
 				default: '',
 			},
 			{
-				...promptTypeOptions,
-			},
-			{
-				...textFromPreviousNode,
-				displayOptions: {
-					show: { promptType: ['auto'] },
-				},
-			},
-			{
-				...textInput,
-				displayOptions: {
-					show: { promptType: ['define'] },
-				},
+				...toolDescription,
 			},
 			{
 				displayName: 'Options',
@@ -540,13 +527,6 @@ export class BetterAiAgentTool implements INodeType {
 						},
 					},
 					{
-						displayName: 'Intermediate Webhook URL',
-						name: 'intermediateWebhookUrl',
-						type: 'string',
-						default: '',
-						description: 'If set, the node POSTs every partial reply/tool-call as JSON to this URL while the agent is running',
-					},
-					{
 						displayName: 'Verbose Logs',
 						name: 'verboseLogs',
 						type: 'boolean',
@@ -558,310 +538,232 @@ export class BetterAiAgentTool implements INodeType {
 		],
 	};
 
-	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
-		const items = this.getInputData();
-		const returnData: INodeExecutionData[] = [];
-
-		// Determine verbose flag once (from first item options) so logs are suppressed before conversion
-		const initialOpts = this.getNodeParameter('options', 0, {}) as { verboseLogs?: boolean };
-		(globalThis as any).__BAA_VERBOSE = !!initialOpts.verboseLogs;
-
-		// Get connected components
-		const connectedModel = await getConnectedModel(this);
-		const connectedMemory = await getConnectedMemory(this);
-		const connectedTools = await getConnectedTools(this);
-
-		if (!connectedModel) {
-			throw new NodeOperationError(this.getNode(), 'No language model connected');
-		}
-
-		// Convert n8n model to AI SDK model
-		const aiModel = convertN8nModelToAiSdk(connectedModel);
+	async supplyData(this: ISupplyDataFunctions, itemIndex: number): Promise<any> {
+		const description = this.getNodeParameter('description', itemIndex) as string;
 		
-		// Convert n8n tools to AI SDK tools
-		const aiTools = convertN8nToolsToAiSdk(connectedTools);
+		// Create a unique tool name based on the description
+		const toolName = `better_ai_agent_${description.toLowerCase().replace(/[^a-z0-9]/g, '_').substring(0, 30)}`;
+		
+		// Create a proper Zod schema for the tool parameters
+		const toolSchema = z.object({
+			query: z.string().describe('The query or task to send to the AI agent'),
+		});
+		
+		return {
+			response: {
+				name: toolName,
+				description: description || 'Advanced AI Agent with improved memory management',
+				schema: toolSchema,
+				invoke: async (parameters: { query: string }) => {
+					// Get connected components
+					const connectedModel = await getConnectedModel(this as any);
+					const connectedMemory = await getConnectedMemory(this as any);
+					const connectedTools = await getConnectedTools(this as any);
 
-		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-			try {
-				// Get input text
-				const input = getPromptInputByType({
-					ctx: this,
-					i: itemIndex,
-					inputKey: 'text',
-					promptTypeKey: 'promptType',
-				});
-
-				if (!input) {
-					throw new NodeOperationError(this.getNode(), 'No input text provided');
-				}
-
-				// Get options
-				const options = this.getNodeParameter('options', itemIndex, {}) as {
-					systemMessage?: string;
-					maxSteps?: number;
-					intermediateWebhookUrl?: string;
-					verboseLogs?: boolean;
-				};
-
-				// Helper to POST intermediate updates without blocking execution
-				const runId = (globalThis.crypto?.randomUUID?.() as string | undefined) ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-				const postIntermediate = (payload: Record<string, unknown>): void => {
-					if (!options.intermediateWebhookUrl) return;
-					try {
-						const fetchFn = (globalThis as any).fetch as (typeof fetch | undefined);
-						if (fetchFn) {
-							void fetchFn(options.intermediateWebhookUrl as string, {
-								method: 'POST',
-								headers: { 'content-type': 'application/json' },
-								body: JSON.stringify(payload),
-							});
-						}
-					} catch (err) {
-						console.warn('❌ Failed to post intermediate webhook:', err);
+					if (!connectedModel) {
+						throw new Error('No language model connected to Better AI Agent Tool');
 					}
-				};
 
-				// Initialize memory adapter
-				let memoryAdapter: ChatArrayMemory | null = null;
-				if (connectedMemory) {
-					let messageLimit: number | null = null;
-					try {
-						// BufferWindowMemory instances expose the window size via `k`.
-						if (typeof (connectedMemory as any).k === 'number') {
-							messageLimit = (connectedMemory as any).k;
-						}
-					} catch {}
-
-					memoryAdapter = new ChatArrayMemory(connectedMemory, messageLimit);
-				}
-
-				// Load previous messages (if any)
-				let messages: CoreMessage[] = [];
-				if (memoryAdapter) {
-					try {
-						const loadedMessages = await memoryAdapter.load();
-						// Additional validation layer after loading from memory
-						messages = validateMessagesArray(loadedMessages);
-						console.log(`✅ Loaded ${messages.length} valid messages from conversation history.`);
-					} catch (err) {
-						console.warn('❌ Failed to load conversation history – starting fresh.', err);
-						// Start fresh with empty conversation if memory is corrupted
-						messages = [];
-					}
-				}
-
-				// Append current user input
-				messages.push({ role: 'user', content: input });
-
-				// If a message limit is defined on the memory adapter, ensure we do not exceed it
-				if (memoryAdapter && (memoryAdapter as any).maxMessages) {
-					const mm = (memoryAdapter as any).maxMessages as number;
-					if (mm > 0 && messages.length > mm) {
-						messages = messages.slice(-mm);
-					}
-				}
-
-				// Generate response with AI SDK - using the pattern from the example
-				// Note: temperature, maxTokens, etc. come from the connected model, not node parameters
-				let stepCount = 0;
-				const genArgs: any = {
-					model: aiModel,
-					maxSteps: options.maxSteps || 5,
-					messages: messages as Array<CoreMessage>,
-					// Provide the system prompt directly to the AI SDK when present
-					...(options.systemMessage ? { system: options.systemMessage } : {}),
-					onStepFinish: ({ text, toolCalls }: any) => {
-						postIntermediate({
-							version: 1,
-							runId,
-							step: stepCount,
-							text,
-							toolCalls,
-							done: false,
-						});
-						stepCount += 1;
-					},
-				};
-
-				// Extract generation settings from the model and pass them explicitly to generateText
-				// This prevents AI SDK from using its own defaults (like temperature: 0)
-				if (aiModel.settings) {
-					if (aiModel.settings.temperature !== undefined) {
-						genArgs.temperature = aiModel.settings.temperature;
-					}
-					if (aiModel.settings.topP !== undefined) {
-						genArgs.topP = aiModel.settings.topP;
-					}
-					if (aiModel.settings.frequencyPenalty !== undefined) {
-						genArgs.frequencyPenalty = aiModel.settings.frequencyPenalty;
-					}
-					if (aiModel.settings.presencePenalty !== undefined) {
-						genArgs.presencePenalty = aiModel.settings.presencePenalty;
-					}
-					if (aiModel.settings.maxTokens !== undefined) {
-						genArgs.maxTokens = aiModel.settings.maxTokens;
-					}
-					if (aiModel.settings.reasoningEffort !== undefined) {
-						genArgs.reasoningEffort = aiModel.settings.reasoningEffort;
-					}
-				}
-
-				if (Object.keys(aiTools).length > 0) {
-					genArgs.tools = aiTools;
-				}
-				
-				// Enable OpenTelemetry tracing for this generation (Langfuse / LangSmith)
-				let telemetrySettings: any;
-				if ((globalThis as any).__BAA_TRACE_PROVIDER === 'langsmith') {
-					telemetrySettings = AISDKExporter.getSettings({
-						runId,
-						metadata: { n8nNodeName: this.getNode().name ?? 'BetterAiAgentTool' },
-					});
-				} else {
-					telemetrySettings = {
-						isEnabled: true,
-						functionId: runId,
-						metadata: { n8nNodeName: this.getNode().name ?? 'BetterAiAgentTool' },
+					// Get options
+					const options = this.getNodeParameter('options', itemIndex, {}) as {
+						systemMessage?: string;
+						maxSteps?: number;
+						verboseLogs?: boolean;
 					};
-				}
 
-				genArgs.experimental_telemetry = telemetrySettings;
-				
-				// Validate messages before sending to AI model
-				const validatedMessages = validateMessagesArray(messages);
-				genArgs.messages = validatedMessages;
+					// Set verbose flag
+					(globalThis as any).__BAA_VERBOSE = !!options.verboseLogs;
 
-				// Generate response - let n8n handle any errors and retries
-				let result: any;
-				try {
-					result = await generateText(genArgs);
-				} catch (err: any) {
-					// Post error to webhook if configured
-					postIntermediate({
-						version: 1,
-						runId,
-						step: stepCount,
-						error: (err as Error).message,
-						done: true,
-						failed: true,
-					});
+					// Convert n8n model to AI SDK model
+					const aiModel = convertN8nModelToAiSdk(connectedModel);
 					
-					// Throw error for n8n to handle (including retries, error workflows, etc.)
-					throw new NodeOperationError(this.getNode(), `AI model generation failed: ${(err as Error).message}`, {
-						itemIndex: 0,
-						runIndex: 0,
-					});
-				}
+					// Convert n8n tools to AI SDK tools
+					const aiTools = convertN8nToolsToAiSdk(connectedTools);
 
-				// Convert result steps to ChatMessage objects & persist
-				if (memoryAdapter) {
-					try {
-						// Reconstruct the full exchange to be saved
-						const messagesToSave: CoreMessage[] = [{ role: 'user', content: input }];
-						
-						// Aggregate toolCalls and toolResults (SDK may expose them only inside steps)
-						const aggregatedToolCalls = (
-							(result.toolCalls && result.toolCalls.length > 0 ? result.toolCalls : []) as any[]
-						).concat(
-							(result.steps || [])
-								.flatMap((s: any) => (s.toolCalls ? s.toolCalls : []))
-						);
+					// Initialize memory adapter
+					let memoryAdapter: ChatArrayMemory | null = null;
+					if (connectedMemory) {
+						let messageLimit: number | null = null;
+						try {
+							// BufferWindowMemory instances expose the window size via `k`.
+							if (typeof (connectedMemory as any).k === 'number') {
+								messageLimit = (connectedMemory as any).k;
+							}
+						} catch {}
 
-						const aggregatedToolResults = (
-							(result.toolResults && result.toolResults.length > 0 ? result.toolResults : []) as any[]
-						).concat(
-							(result.steps || [])
-								.flatMap((s: any) => (s.toolResults ? s.toolResults : []))
-						);
-
-						// If there were tool calls, save them as separate assistant message
-						if (aggregatedToolCalls.length > 0) {
-							messagesToSave.push({
-								role: 'assistant',
-								content: aggregatedToolCalls.map((toolCall) => ({
-									type: 'tool-call',
-									toolCallId: toolCall.toolCallId || toolCall.id || toolCall.callId,
-									toolName: toolCall.toolName || toolCall.name,
-									args: toolCall.args || toolCall.arguments || toolCall.params,
-								})),
-							});
-						}
-
-						// If there were tool results, save them
-						if (aggregatedToolResults.length > 0) {
-							messagesToSave.push({
-								role: 'tool',
-								content: aggregatedToolResults.map((toolResult: any) => {
-									// Build tool-result part
-									const normalize = (): any => {
-										const raw = toolResult.result ?? toolResult.data ?? toolResult.output ?? '';
-										if (typeof raw === 'string') {
-											const trimmed = raw.trim();
-											if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
-												try {
-													return JSON.parse(trimmed);
-												} catch {}
-											}
-										}
-										return raw;
-									};
-
-									return {
-										type: 'tool-result',
-										toolCallId: toolResult.toolCallId || toolResult.id || toolResult.callId,
-										toolName: toolResult.toolName || toolResult.name,
-										result: normalize(),
-									};
-								}),
-							});
-						}
-
-						// If there's a final text response, save it as separate assistant message
-						if (result.text) {
-							messagesToSave.push({ role: 'assistant', content: result.text });
-						}
-
-						await memoryAdapter.save(messagesToSave);
-						console.log(`💾 Saved ${messagesToSave.length} messages (including new turn).`);
-					} catch (err) {
-						console.warn('❌ Failed to save conversation to memory:', err);
-						// Note: We don't throw here as the AI generation was successful
-						// Memory save failures are not critical to the node execution
+						memoryAdapter = new ChatArrayMemory(connectedMemory, messageLimit);
 					}
-				}
 
-				// Prepare output
-				returnData.push({
-					json: {
-						output: result.text,
-						steps: result.steps || [],
-						// Include debug information
-						totalSteps: result.steps?.length || 0,
-					},
-				});
+					// Load previous messages (if any)
+					let messages: CoreMessage[] = [];
+					if (memoryAdapter) {
+						try {
+							const loadedMessages = await memoryAdapter.load();
+							// Additional validation layer after loading from memory
+							messages = validateMessagesArray(loadedMessages);
+							console.log(`✅ Loaded ${messages.length} valid messages from conversation history.`);
+						} catch (err) {
+							console.warn('❌ Failed to load conversation history – starting fresh.', err);
+							// Start fresh with empty conversation if memory is corrupted
+							messages = [];
+						}
+					}
 
-				// Post final result to webhook if configured
-				postIntermediate({
-					version: 1,
-					runId,
-					step: stepCount,
-					text: result.text,
-					done: true,
-					failed: false,
-				});
+					// Append current user input
+					messages.push({ role: 'user', content: parameters.query });
 
-			} catch (error) {
-				if (this.continueOnFail()) {
-					returnData.push({
-						json: { error: (error as Error).message },
-						pairedItem: { item: itemIndex },
-					});
-					continue;
-				}
-				throw error;
-			}
-		}
+					// If a message limit is defined on the memory adapter, ensure we do not exceed it
+					if (memoryAdapter && (memoryAdapter as any).maxMessages) {
+						const mm = (memoryAdapter as any).maxMessages as number;
+						if (mm > 0 && messages.length > mm) {
+							messages = messages.slice(-mm);
+						}
+					}
 
-		return [returnData];
+					// Generate response with AI SDK
+					let stepCount = 0;
+					const runId = (globalThis.crypto?.randomUUID?.() as string | undefined) ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+					
+					const genArgs: any = {
+						model: aiModel,
+						maxSteps: options.maxSteps || 5,
+						messages: messages as Array<CoreMessage>,
+						// Provide the system prompt directly to the AI SDK when present
+						...(options.systemMessage ? { system: options.systemMessage } : {}),
+						onStepFinish: ({ text, toolCalls }: any) => {
+							stepCount += 1;
+							console.log(`Step ${stepCount}: ${text || 'Tool calls executed'}`);
+						},
+					};
+
+					// Extract generation settings from the model and pass them explicitly to generateText
+					if (aiModel.settings) {
+						if (aiModel.settings.temperature !== undefined) {
+							genArgs.temperature = aiModel.settings.temperature;
+						}
+						if (aiModel.settings.topP !== undefined) {
+							genArgs.topP = aiModel.settings.topP;
+						}
+						if (aiModel.settings.frequencyPenalty !== undefined) {
+							genArgs.frequencyPenalty = aiModel.settings.frequencyPenalty;
+						}
+						if (aiModel.settings.presencePenalty !== undefined) {
+							genArgs.presencePenalty = aiModel.settings.presencePenalty;
+						}
+						if (aiModel.settings.maxTokens !== undefined) {
+							genArgs.maxTokens = aiModel.settings.maxTokens;
+						}
+						if (aiModel.settings.reasoningEffort !== undefined) {
+							genArgs.reasoningEffort = aiModel.settings.reasoningEffort;
+						}
+					}
+
+					if (Object.keys(aiTools).length > 0) {
+						genArgs.tools = aiTools;
+					}
+					
+					// Enable OpenTelemetry tracing for this generation
+					let telemetrySettings: any;
+					if ((globalThis as any).__BAA_TRACE_PROVIDER === 'langsmith') {
+						telemetrySettings = AISDKExporter.getSettings({
+							runId,
+							metadata: { n8nNodeName: 'BetterAiAgentTool' },
+						});
+					} else {
+						telemetrySettings = {
+							isEnabled: true,
+							functionId: runId,
+							metadata: { n8nNodeName: 'BetterAiAgentTool' },
+						};
+					}
+
+					genArgs.experimental_telemetry = telemetrySettings;
+					
+					// Validate messages before sending to AI model
+					const validatedMessages = validateMessagesArray(messages);
+					genArgs.messages = validatedMessages;
+
+					// Generate response
+					const result = await generateText(genArgs);
+
+					// Convert result steps to ChatMessage objects & persist
+					if (memoryAdapter) {
+						try {
+							// Reconstruct the full exchange to be saved
+							const messagesToSave: CoreMessage[] = [{ role: 'user', content: parameters.query }];
+							
+							// Aggregate toolCalls and toolResults (SDK may expose them only inside steps)
+							const aggregatedToolCalls = (
+								(result.toolCalls && result.toolCalls.length > 0 ? result.toolCalls : []) as any[]
+							).concat(
+								(result.steps || [])
+									.flatMap((s: any) => (s.toolCalls ? s.toolCalls : []))
+							);
+
+							const aggregatedToolResults = (
+								(result.toolResults && result.toolResults.length > 0 ? result.toolResults : []) as any[]
+							).concat(
+								(result.steps || [])
+									.flatMap((s: any) => (s.toolResults ? s.toolResults : []))
+							);
+
+							// If there were tool calls, save them as separate assistant message
+							if (aggregatedToolCalls.length > 0) {
+								messagesToSave.push({
+									role: 'assistant',
+									content: aggregatedToolCalls.map((toolCall) => ({
+										type: 'tool-call',
+										toolCallId: toolCall.toolCallId || toolCall.id || toolCall.callId,
+										toolName: toolCall.toolName || toolCall.name,
+										args: toolCall.args || toolCall.arguments || toolCall.params,
+									})),
+								});
+							}
+
+							// If there were tool results, save them
+							if (aggregatedToolResults.length > 0) {
+								messagesToSave.push({
+									role: 'tool',
+									content: aggregatedToolResults.map((toolResult: any) => {
+										// Build tool-result part
+										const normalize = (): any => {
+											const raw = toolResult.result ?? toolResult.data ?? toolResult.output ?? '';
+											if (typeof raw === 'string') {
+												const trimmed = raw.trim();
+												if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+													try {
+														return JSON.parse(trimmed);
+													} catch {}
+												}
+											}
+											return raw;
+										};
+
+										return {
+											type: 'tool-result',
+											toolCallId: toolResult.toolCallId || toolResult.id || toolResult.callId,
+											toolName: toolResult.toolName || toolResult.name,
+											result: normalize(),
+										};
+									}),
+								});
+							}
+
+							// If there's a final text response, save it as separate assistant message
+							if (result.text) {
+								messagesToSave.push({ role: 'assistant', content: result.text });
+							}
+
+							await memoryAdapter.save(messagesToSave);
+							console.log(`💾 Saved ${messagesToSave.length} messages (including new turn).`);
+						} catch (err) {
+							console.warn('❌ Failed to save conversation to memory:', err);
+						}
+					}
+
+					return result.text || 'Task completed successfully';
+				},
+			},
+		};
 	}
 }
